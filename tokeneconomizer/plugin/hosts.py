@@ -1361,36 +1361,26 @@ class QwenCode(Host):
         return not env.get("QWEN_CODE")
 
     # -- the finished session ---------------------------------------------------------------
-    # Qwen Code's transcript is not Claude Code's format: records carry `type`
+    # Qwen Code's transcript is its own JSONL: records carry `type`
     # (user/system/assistant/tool_result) with the payload under `message`, plus a
-    # `usageMetadata` block for token accounting. Probed against a live log on 2026-11-17:
-    # every claude reader parses it to zero calls and zero tokens without raising -- a silent
-    # empty read. That is worse than a crash here, because `mechanism_trace` runs before
-    # `session_usage` in fold: an empty trajectory would let micro-skills learn nothing and
-    # tool pruning score every tool as unused, commit that state, and only then hit the
-    # ledger. So each reader refuses loudly until `trace/qwen.py` exists. The refusal happens
-    # before the ledger is written and before any mechanism state is committed, so a folded
-    # Qwen Code session is never counted as having spent zero tokens; the detached `te fold`
-    # process dies with the reason in `<store>/fold.log`, and the session stays pending for
-    # the moment the reader lands.
+    # `usageMetadata` block on every assistant entry (verified against a 0.27.4 live log on
+    # 2026-11-17). `trace/qwen.py` converts it to the Claude envelope the other readers handle;
+    # `mechanism_trace` hands that to the fold, whose `run/transcript.jsonl` link the tool
+    # usage then reads through the shared readers. Token accounting is direct (see the module
+    # docstring): fresh input, no cache-write figure in the log.
     def mechanism_trace(self, transcript_path, workdir):
-        raise NotImplementedError(
-            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
+        out = os.path.join(workdir, "qwen_trace.jsonl")
+        n = trace.qwen_session_to_claude(transcript_path, out)
+        return out if n is not None else None
 
     def session_usage(self, transcript_path):
-        raise NotImplementedError(
-            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
+        return trace.qwen_session_usage(transcript_path)
 
     def prompt_count(self, transcript_path):
-        raise NotImplementedError(
-            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
-
-    def tool_usage(self, trace_path):
-        raise NotImplementedError(
-            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
+        return trace.qwen_prompt_count(transcript_path)
 
     keeps_history = False   # qwen logs sit under ~/.qwen/projects/<slug>/chats/, not Claude's
-                            # layout; the history() override scanned the wrong tree and is removed
+                            # layout; history import is not wired up for this host yet
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "droid": Droid,
          "opencode": OpenCode, "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
