@@ -1317,9 +1317,90 @@ class Droid(Host):
         return folder == os.path.abspath(root).replace("\\", "-").replace("/", "-")
 
 
+class QwenCode(Host):
+    """Qwen Code, through `plugin/.qwen-plugin/` and its `qwen/hooks.json`.
+
+    Qwen Code runs the same hook contract as Claude Code: JSON on stdin with `session_id`,
+    `transcript_path`, `cwd`, `hook_event_name`, and `tool_name` / `tool_input` / `tool_response`
+    per tool call; JSON on stdout with `hookSpecificOutput.additionalContext`, `systemMessage`,
+    and `continue` / `stopReason`. The adapter is therefore a thin wrapper around ClaudeCode:
+
+      * Turn identity. Qwen Code stamps every event of a prompt-turn with `prompt_id` (same as
+        Claude Code).
+      * Context channels. `hookSpecificOutput.additionalContext` from SessionStart reaches the
+        model; `systemMessage` is shown in the transcript. Notices go through the model
+        (`relays_notices = True`), as on Claude Code.
+      * Tool results. Same format as Claude Code: Bash `tool_response` is `{stdout, stderr,
+        interrupted, ...}` with no exit code; a non-zero exit comes as `PostToolUseFailure`.
+      * The session log. Qwen Code's transcript is read as-is, same as Claude Code's.
+
+    The plugin hook file passes `--host qwen` explicitly, so detection is straightforward.
+    """
+    name = "qwen"
+    interrupt = "Press Esc to interrupt it."
+    relays_notices = True
+    prompt_context = True
+    keeps_start_context = True
+
+    def turn_key(self, p):
+        return str(p.get("prompt_id") or "")
+
+    def tool_call(self, p):
+        name, args, text, code = super().tool_call(p)
+        if code is None and _failure_response(p) is None:
+            code = claude_success_code(name, args, p.get("tool_response"))
+        return name, args, text, code
+
+    def env_session_id(self, env):
+        # Qwen Code exports its session id to the shell environment.
+        return str(env.get("TE_SESSION_ID") or env.get("QWEN_CODE_SESSION_ID") or "")
+
+    def headless(self, env, transcript=None):
+        # Qwen Code runs headless when invoked with `-p` (one-shot prompt) or when no person
+        # is attending the session. The environment variable QWEN_CODE_SESSION_ATTENDED marks
+        # an interactive session (1 = attended, 0 = headless).
+        attended = str(env.get("QWEN_CODE_SESSION_ATTENDED", "")).strip()
+        if attended in ("0", "1"):
+            return attended == "0"
+        return str(env.get("QWEN_CODE_ENTRYPOINT", "")).startswith("sdk")
+
+    def session_usage(self, transcript_path):
+        return trace.claude_session_usage(transcript_path)
+
+    def prompt_count(self, transcript_path):
+        return trace.claude_prompt_count(transcript_path)
+
+    def tool_usage(self, trace_path):
+        return trace.claude_tool_usage(os.path.realpath(trace_path))
+
+    keeps_history = True
+
+    def history(self, env, extra_dirs=()):
+        """Every top-level log under `$QWEN_CONFIG_DIR/projects` (else `~/.qwen/projects`)."""
+        dirs = [trace.claude_projects_dir(env)]
+        for d in extra_dirs or ():
+            d = os.path.expanduser(str(d))
+            dirs.append(os.path.join(d, "projects") if os.path.isdir(os.path.join(d, "projects"))
+                        else d)
+        out, seen, seen_dirs = [], set(), set()
+        for d in dirs:
+            real = os.path.realpath(d)
+            if real in seen_dirs:
+                continue
+            seen_dirs.add(real)
+            for folder, path, mtime, size in trace.claude_history_logs(d):
+                sid = os.path.basename(path)[:-len(".jsonl")]
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                out.append({"session_id": sid, "folder": folder, "path": path, "mtime": mtime,
+                            "size": size})
+        return out
+
+
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "droid": Droid,
          "opencode": OpenCode, "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
-         "antigravity": Antigravity}
+         "antigravity": Antigravity, "qwen": QwenCode}
 
 
 def default_host(env=None, recent=None):
@@ -1334,6 +1415,8 @@ def default_host(env=None, recent=None):
         return "claude"
     if env.get("COPILOT_CLI") == "1":
         return "copilot"
+    if env.get("QWEN_CODE") == "1" or env.get("QWEN_CODE_SESSION_ID"):
+        return "qwen"
     if env.get("CURSOR_AGENT") or env.get("CURSOR_PROJECT_DIR"):
         return "cursor"
     if env.get("GROK_SESSION_ID"):
@@ -1377,4 +1460,8 @@ def detect(payload, env=None, hint=None):
     # tag a Claude Code session started from inside Copilot -- hence the transcript test first.)
     if not tp and (env or {}).get("COPILOT_PLUGIN_ROOT"):
         return Copilot()
+    # Qwen Code marks its hook processes with QWEN_PLUGIN_ROOT. The transcript test comes first,
+    # so a Qwen Code session started from inside another agent is still read as Qwen Code's.
+    if not tp and (env or {}).get("QWEN_PLUGIN_ROOT"):
+        return QwenCode()
     return ClaudeCode()
