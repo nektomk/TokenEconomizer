@@ -50,6 +50,13 @@ so no extra API key is needed and the call is billed where the session is:
     `TE_DROID_SIDECALL=1`): Droid writes a session log of its own for the call, and cannot be
     left with no tool at all. Its usage is read from the call's result or from the settings file
     beside that log.
+  * Qwen Code: `qwen --safe-mode --max-tool-calls 0 --output-format json --system-prompt <neutral>`
+    in a throwaway directory, on the person's default model, with every bundled tool named in
+    `--exclude-tools`. `--safe-mode` leaves out its hooks, extensions, skills, MCP servers and
+    QWEN.md, so a repository's own instructions never reach the call. Qwen Code has no option that
+    unregisters every tool, so `--max-tool-calls 0` is what keeps the call inert: it aborts at the
+    first one (exit 55, nothing printed) rather than let it act. Its usage is in the run's own
+    `result` event. See `qwen_call`.
 
 Every side call but Hermes's runs with `TE_SIDECALL=1`, which the plugin's hook entry point treats as "do
 nothing": without it the nested agent would run this plugin's hooks and recurse. A call that
@@ -508,6 +515,58 @@ def grok_call(prompt, model="", cli="grok", timeout=TIMEOUT_S):
     return text, eff
 
 
+# Qwen Code registers every tool it has even under `--safe-mode`, so a side call names them all
+# with `--exclude-tools` and replaces the session's system prompt with a neutral one. Measured on
+# 0.28.0 (Windows, 2026-11-17): the pair takes the call's input from 8 105 tokens to 265 and
+# leaves the request with no tool at all. The list is this qwen's own bundled set -- `--safe-mode`
+# loads no extension, so it does not depend on what the person has installed -- and a tool a later
+# version adds is simply not excluded: that costs input tokens and changes nothing else, because
+# `--max-tool-calls 0` is the guarantee. It is a hard one: told to write a file, the call aborted
+# with exit 55 having printed nothing, and the file was not there.
+QWEN_EXCLUDE_TOOLS = (
+    "read_mcp_resource", "skill", "read_file", "search_memory", "zoom_image", "grep_search",
+    "cron_list", "cron_delete", "autofix_pr", "web_fetch", "tool_search", "list_agents",
+    "task_stop", "enter_worktree", "exit_worktree", "record_artifact", "get_goal", "update_goal",
+    "tool_call", "agent", "send_message", "glob", "report_findings", "cron_create", "loop_wakeup",
+    "manage_memory")
+QWEN_SYSTEM_PROMPT = ("You are a terse assistant. Answer with text only; your entire reply is "
+                      "the answer.")
+
+
+def qwen_call(prompt, model="", cli="qwen", timeout=TIMEOUT_S):
+    """A text-only completion through `qwen --output-format json` in an empty throwaway
+    directory, on the person's default model unless `model` names one.
+
+    No tool can act: none is in the request (`QWEN_EXCLUDE_TOOLS`) and `--max-tool-calls 0`
+    aborts the run at the first call anyway. `--safe-mode` leaves out its hooks, extensions,
+    skills, MCP servers and QWEN.md, so a repository's own instructions never reach the call and
+    this plugin's hooks cannot recurse (`TE_SIDECALL=1` is the same guard every other host runs
+    under). The prompt goes as a positional, not the deprecated `-p`.
+
+    The call writes a session log of its own under `~/.qwen/projects/<slug>/chats/`. No hook
+    tracks it and `QwenCode.keeps_history` is off, so nothing folds it -- as on Grok. Its usage is
+    in the run's own `result` event, with the cached reads inside `input_tokens`, so
+    `trace.qwen_json_reply` subtracts them before the ledger prices the call."""
+    cmd = [*program(cli), "--safe-mode", "--max-tool-calls", "0", "--output-format", "json",
+           "--system-prompt", QWEN_SYSTEM_PROMPT]
+    if model:
+        cmd += ["--model", model]
+    # The positional prompt goes before `--exclude-tools`: that flag takes an array, and a prompt
+    # after it would be read as one more tool name.
+    cmd += [prompt, "--exclude-tools", *QWEN_EXCLUDE_TOOLS]
+    with tempfile.TemporaryDirectory(prefix="te-side-", ignore_cleanup_errors=True) as cwd:
+        out = subprocess.run(cmd, capture_output=True, encoding="utf-8", errors="replace",
+                             timeout=timeout, env=_env(), cwd=cwd, stdin=subprocess.DEVNULL)
+    text, usage = trace.qwen_json_reply(out.stdout)
+    if not text:
+        _no_reply("qwen", out)
+    eff = None
+    if usage:
+        usage["model"] = usage.get("model") or model or "qwen"
+        eff, _ = accounting.effective(usage)
+    return text, eff
+
+
 HERMES_SOURCE = "tool"
 # Hermes refuses a `--source` it does not know (`invalid_params`, 0.22.5, though its docs say any
 # value is stored), and `tool` is the one meant for this: hidden from its session pickers, and not
@@ -761,7 +820,7 @@ def copilot_call(prompt, model="", cli="copilot", timeout=TIMEOUT_S):
 
 
 # Hosts the plugin makes no model call for: their CLI cannot run a prompt with every tool off.
-NO_SIDE_CALLS = frozenset({"antigravity", "qwen"})
+NO_SIDE_CALLS = frozenset({"antigravity"})
 
 
 # ---- an on-device model for some side calls (`local_model`, `local_roles`) -------------------
@@ -974,7 +1033,7 @@ def droid_call(prompt, model="", cli="droid", timeout=TIMEOUT_S):
 
 # The command each agent's side calls run, as the notices name it; the rest run `<agent> -p`.
 _CALLS = {"codex": "codex exec", "droid": "droid exec", "opencode": "opencode run",
-          "cursor": "cursor-agent -p", "hermes": "hermes chat"}
+          "cursor": "cursor-agent -p", "hermes": "hermes chat", "qwen": "qwen"}
 
 
 def call_name(host_name):
@@ -1031,4 +1090,6 @@ def _host_call(host_name, config):
         if not (droid_enabled() or getattr(config, "droid_sidecall", False)):
             return None
         return lambda prompt, _m="agent": droid_call(prompt, model=model)
+    if host_name == "qwen":
+        return lambda prompt, _m="agent": qwen_call(prompt, model=model)
     return lambda prompt, _m="agent": claude_call(prompt, model=model or "haiku", **kw)

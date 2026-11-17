@@ -1332,6 +1332,8 @@ class QwenCode(Host):
         (`relays_notices = True`), as on Claude Code.
       * Tool results. Same format as Claude Code: Bash `tool_response` is `{stdout, stderr,
         interrupted, ...}` with no exit code; a non-zero exit comes as `PostToolUseFailure`.
+      * Tool names. The payload carries Qwen Code's own (`run_shell_command`, `read_file`, ...),
+        so `tool_call` renames them into the mechanisms' vocabulary, as the session reader does.
       * The session log. Qwen Code's transcript is read as-is, same as Claude Code's.
 
     The plugin hook file passes `--host qwen` explicitly, so detection is straightforward.
@@ -1347,6 +1349,14 @@ class QwenCode(Host):
 
     def tool_call(self, p):
         name, args, text, code = super().tool_call(p)
+        # The payload names the tool as Qwen Code registers it -- `run_shell_command`,
+        # `read_file`, `write_file`, `grep_search` (`tool_name` is the tool's own `name`,
+        # 0.28.0) -- while the mechanisms key on their own vocabulary, `canon_tool` reading
+        # `bash`, `view`, `create` and `grep`. Without this rename a qwen shell call is no
+        # shell call at all: the guard sees no command to read a test status from, and
+        # `claude_success_code` below answers None for it. It is the same rename
+        # `mechanism_trace` applies to the folded session, applied to the live one.
+        name, args = trace.qwen_tool(name, args)
         if code is None and _failure_response(p) is None:
             code = claude_success_code(name, args, p.get("tool_response"))
         return name, args, text, code

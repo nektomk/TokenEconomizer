@@ -25,6 +25,9 @@ log carries it in `usageMetadata` on every assistant entry (verified 2026-11-17 
 the reasoning tokens (broken out in `thoughtsTokenCount`) are inside the candidate count;
 `promptTokenCount` includes the cached reads, so the fresh input is the difference, as on
 Grok.
+
+`qwen_json_reply` reads the same figures from a headless run's `--output-format json` array,
+which is what a side call (`plugin.sidecall.qwen_call`) answers with.
 """
 import json
 import os
@@ -207,3 +210,41 @@ def qwen_session_usage(path):
 def qwen_safe_session_id(sid):
     """A log's id when it is a plain token (safe as a file name), else None."""
     return sid if isinstance(sid, str) and SESSION_ID_RE.fullmatch(sid) else None
+
+
+def qwen_json_reply(stdout):
+    """(text, usage) of a headless `qwen --output-format json` run: one JSON array of events, a
+    `system`/`init` record, the `assistant` records, and a closing `result`.
+
+    The reply is the `result` record's `result`, and `usage` is its `usage` block in the fields
+    `pricing.effective_tokens` reads, with the cached reads subtracted from `input_tokens` exactly
+    as `qwen_session_usage` does; `model` comes from the `init` record. `usage` is None when the
+    run names none -- one aborted at its tool-call limit prints nothing at all, so both come back
+    empty and the caller reports no reply."""
+    data = None
+    for candidate in ((stdout or "").strip(), *reversed((stdout or "").strip().splitlines())):
+        try:
+            data = json.loads(candidate)
+            break
+        except ValueError:
+            continue
+    events = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+    text, usage, model = "", None, None
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if isinstance(ev.get("model"), str) and ev["model"]:
+            model = ev["model"]
+        if ev.get("type") != "result":
+            continue
+        if isinstance(ev.get("result"), str):
+            text = ev["result"]
+        u = ev.get("usage")
+        if isinstance(u, dict) and u.get("input_tokens") is not None:
+            cached = int(u.get("cache_read_input_tokens") or 0)
+            usage = {"input_tokens": max(0, int(u["input_tokens"]) - cached),
+                     "cache_read_input_tokens": cached,
+                     "cache_creation_input_tokens": int(u.get("cache_creation_input_tokens") or 0),
+                     "output_tokens": int(u.get("output_tokens") or 0),
+                     "model": model}
+    return text.strip(), usage

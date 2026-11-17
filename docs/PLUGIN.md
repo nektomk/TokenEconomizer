@@ -95,7 +95,7 @@ event): no nudge is counted, and there is no one left to redirect.
 | Still stuck after the redirect | terminal abort, in autonomous runs | a one-line **notice** to the person, ending with how to stop the turn on that agent and in that mode (§3); the plugin never stops a turn, and `loopguard: stop` is read as `nudge` | Not every agent's hooks can stop a turn (Codex and Copilot ignore `continue: false`), and the person decides: the benchmark guard's own design note says "interactive callers should map it to a hand-off" |
 | Micro-skills' reading | a domain vocabulary per benchmark (Python/git, Node/web); the proposer's digest counts edited Python files, lists test invocations and flags Python import errors, and its prompt leads with the test command | **generic**, whatever the repository: every ecosystem's interpreters, package tools and test runners at once, builds and checks (`make`, `tsc`, `npm run build`, `cargo check`, ...) as their own intent, every edited file, and a language-neutral digest (failing commands with a normalized error line, paths relative to the repository) and prompt, with tests one topic among several. `vocabulary=python-git` or `node-web` selects an experiment's | A person's repository may be in any language, or several; the experiments keep the paper's reading (its prompt is pinned by a test) |
 | Micro-skills | on in the arms that measured it: the proposer every 5 tasks (on Codex, every 10, over the free layer) | **off by default**; `on` runs the free layer under the proposer, every `microskills_propose_every` sessions (3 by default: after the 2nd, 5th, 8th, ...), since a real session usually carries more work than one benchmark task | The proposer calls a model on the person's plan, and what it injects is derived from command output a repository controls: turning it on is the person's call. In the experiments the free layer alone formed almost nothing once the harness set each environment up properly, so `on` keeps the proposer |
-| Optimizer model | the agent's own model, so overhead could not look cheaper than its arm | the cheapest capable model on the user's own agent CLI (`paid_model`; when empty, `haiku` on Claude Code, the agent's default model on Codex and Pi, and on Copilot a concrete `COPILOT_MODEL` or a BYOK provider's Haiku): the proposer when micro-skills is on, the loop guard's judge and redirect writer whenever the guard is on | Every call is still charged to the session ledger |
+| Optimizer model | the agent's own model, so overhead could not look cheaper than its arm | the cheapest capable model on the user's own agent CLI (`paid_model`; when empty, `haiku` on Claude Code, the agent's default model on Codex, Pi and Qwen Code, and on Copilot a concrete `COPILOT_MODEL` or a BYOK provider's Haiku): the proposer when micro-skills is on, the loop guard's judge and redirect writer whenever the guard is on | Every call is still charged to the session ledger |
 
 ## 3. Verified agent behaviour
 
@@ -782,8 +782,9 @@ by default with the guard), of micro-skills (its proposer, when it is on), and, 
 it, of `toolprune measure` on Claude Code. Those calls send
 **digests** — command templates, edited file basenames, error lines with paths and numbers
 masked, never file contents — through your own agent CLI (`claude -p` / `codex exec` /
-`copilot -p` / `pi -p` / `opencode run` / `grok -p` / `hermes chat` / `droid exec`, the last only with
-`droid_sidecall` on), billed where your session is. The proposer keeps the digests of the last eight
+`copilot -p` / `pi -p` / `opencode run` / `grok -p` / `hermes chat` / `qwen` / `droid exec`, the
+last only with `droid_sidecall` on), billed where your session is. The proposer keeps the digests
+of the last eight
 sessions with its state, raw commands and output capped, so that each run sees more than the
 session that just ended. Sessions imported from Claude Code's history call no model, but their
 digests join that window, so the proposer's next call can include digests of sessions from
@@ -865,6 +866,34 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
 * **Factory Droid (experimental)** — micro-skills, the loop guard and session cost, on 0.233.0
   (macOS). No tool pruning: the TUI has no persistent per-tool setting (Factory issue #65). Side
   calls are off until `droid_sidecall` is on; see `docs/DROID.md`.
+* **Qwen Code (`qwen`, experimental)** — micro-skills, tool pruning, the loop guard and session
+  cost, on 0.28.0 (Windows). Its hook contract is Claude Code's, so the adapter is a thin wrapper
+  around it: hooks come from `plugin/qwen-extension.json`, every one passing `--host qwen`;
+  `prompt_id` stamps a prompt-turn; context goes back as `hookSpecificOutput.additionalContext`
+  and a notice as `systemMessage`, which Qwen Code relays through the model
+  (`relays_notices`); a failed call is reported only as `PostToolUseFailure`. Three things differ,
+  each verified live on 2026-11-17:
+  * **Tool names.** A payload names the tool as Qwen Code registers it — `run_shell_command`,
+    `read_file`, `write_file`, `grep_search` (`tool_name` is the tool's own `name`) — while the
+    mechanisms key on their own vocabulary. The adapter renames it, as the session reader does;
+    without that a qwen shell call is no shell call, the guard reads no test status from it, and
+    the turns that feed the envelope are misjudged green.
+  * **The session log.** Its own JSONL under `~/.qwen/projects/<slug>/chats/`, converted to the
+    Claude envelope by `trace/qwen.py`; usage comes from its own `usageMetadata`, whose
+    `promptTokenCount` counts the cached reads, and there is no cache-write figure. There is no
+    history import yet (`keeps_history` is off).
+  * **The side call.** `qwen --safe-mode --max-tool-calls 0 --output-format json` with a neutral
+    `--system-prompt`, every bundled tool named in `--exclude-tools`, and the prompt as a
+    positional before that array — in a throwaway directory, on the person's default model
+    (`qwen_paid_model` to name one). `--safe-mode` leaves out its hooks, extensions, skills, MCP
+    servers and QWEN.md, so a repository's own instructions never reach the call. Qwen Code has no
+    option that unregisters every tool, so `--max-tool-calls 0` is what keeps the call inert, and
+    it is a hard guarantee: told to write a file, the call aborted with exit 55 having printed
+    nothing, and the file was not there. Excluding the tools and overriding the system prompt is
+    what the request costs — 265 input tokens instead of 8 105 — and a tool a later version adds
+    is simply not excluded, which costs tokens and changes nothing else. The call leaves a session
+    log of its own, which no hook tracks and nothing folds, as on Grok. Its usage is in the run's
+    `result` event.
 * **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s

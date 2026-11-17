@@ -1,6 +1,8 @@
-"""Qwen Code: the session reader, its host adapter, usage, and the micro-skill loop."""
+"""Qwen Code: the session reader, its host adapter, usage, the side call, and the micro-skill
+loop."""
 import json
 import os
+import subprocess
 import time
 
 import pytest
@@ -361,10 +363,10 @@ def test_a_learned_fact_reaches_the_next_qwen_session(tmp_path):
         out["hookSpecificOutput"]["additionalContext"]
 
 
-def test_microskills_on_learns_the_free_facts_without_a_proposer(tmp_path):
-    """`on` is envfacts plus the paid proposer, and Qwen Code has no side calls (it is in
-    `sidecall.NO_SIDE_CALLS`, so `optimizer` answers None): the free facts are still learned,
-    the proposer simply never runs, and nothing is recorded as an error."""
+def test_microskills_on_learns_the_free_facts_when_the_side_call_answers_nothing(tmp_path):
+    """`on` is envfacts plus the paid proposer. Qwen Code has a side call (`qwen_call`), so the
+    proposer does run here -- and, offline, answers nothing: the free facts are still learned, the
+    tick is skipped rather than the fold aborted, and nothing is recorded as an error."""
     from test_live_hooks import call
 
     chats = tmp_path / "chats"
@@ -383,3 +385,145 @@ def test_microskills_on_learns_the_free_facts_without_a_proposer(tmp_path):
     assert store.read("injection.json")["profile"] == "envfacts+distiller"
     assert "`python -m pytest" in store.read("injection.json")["rendered"]
     assert not os.path.exists(os.path.join(state_root(env), "errors.log"))
+
+
+# ---- the side call ---------------------------------------------------------------------------
+# A `qwen --output-format json` run as 0.28.0 writes it: one JSON array, an `init` record naming
+# the model and the tools it registered, the assistant records, and a closing `result` whose
+# `usage` counts the cached reads inside `input_tokens`.
+QWEN_RUN = [
+    {"type": "system", "subtype": "init", "session_id": "c1", "cwd": "/tmp/te-side-x",
+     "tools": [], "mcp_servers": [], "model": "qwen/qwen3.8-max"},
+    {"type": "assistant", "session_id": "c1",
+     "message": {"role": "assistant", "model": "qwen/qwen3.8-max",
+                 "content": [{"type": "text", "text": '{"stuck": false}'}]},
+     "usage": {"input_tokens": 20, "output_tokens": 5}},
+    {"type": "result", "subtype": "success", "session_id": "c1", "is_error": False,
+     "result": '{"stuck": false}',
+     "usage": {"input_tokens": 265, "output_tokens": 26, "cache_read_input_tokens": 100,
+               "total_tokens": 291}},
+]
+
+
+def test_json_reply_reads_the_result_record_and_subtracts_the_cached_reads():
+    text, usage = trace.qwen_json_reply(json.dumps(QWEN_RUN))
+    assert text == '{"stuck": false}'
+    assert usage == {"input_tokens": 165, "cache_read_input_tokens": 100,
+                     "cache_creation_input_tokens": 0, "output_tokens": 26,
+                     "model": "qwen/qwen3.8-max"}
+
+
+@pytest.mark.parametrize("stdout", ["", "not json at all", "[]",
+                                    json.dumps([{"type": "result", "result": "x"}])])
+def test_json_reply_is_empty_for_a_run_that_printed_no_usage(stdout):
+    """A run aborted at its tool-call limit prints nothing at all (exit 55, verified on 0.28.0),
+    and one with no `usage` block prices as `no_usage` rather than as a guess."""
+    text, usage = trace.qwen_json_reply(stdout)
+    assert usage is None
+    assert text in ("", "x")
+
+
+@pytest.mark.real_sidecalls
+def test_the_side_call_runs_with_no_tool_and_no_customization(monkeypatch):
+    """The flags that make the call inert, and the order that keeps the prompt out of the
+    `--exclude-tools` array: `--safe-mode` (no hooks, extensions, skills, MCP servers or QWEN.md),
+    `--max-tool-calls 0` (the first tool call aborts it), every bundled tool excluded, and the
+    prompt as a positional before them. `TE_SIDECALL=1` stops the nested run's own hooks."""
+    from tokeneconomizer.plugin import sidecall
+    seen = {}
+
+    def fake_run(cmd, **kw):
+        seen.update(cmd=cmd, env=kw.get("env"), cwd=kw.get("cwd"))
+        return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(QWEN_RUN), stderr="")
+
+    monkeypatch.setattr(sidecall.subprocess, "run", fake_run)
+    monkeypatch.setattr(sidecall, "program", lambda cli: [cli])
+    text, eff = sidecall.qwen_call("PROMPT")
+    assert text == '{"stuck": false}' and eff == accounting.effective({
+        "input_tokens": 165, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 0,
+        "output_tokens": 26, "model": "qwen/qwen3.8-max"})[0]
+    cmd = seen["cmd"]
+    assert cmd[:6] == ["qwen", "--safe-mode", "--max-tool-calls", "0", "--output-format", "json"]
+    assert cmd[cmd.index("--system-prompt") + 1] == sidecall.QWEN_SYSTEM_PROMPT
+    # The positional prompt comes before the `--exclude-tools` array, or one more tool name would
+    # be read where the prompt belongs.
+    assert cmd.index("PROMPT") < cmd.index("--exclude-tools")
+    assert cmd[cmd.index("--exclude-tools") + 1:] == list(sidecall.QWEN_EXCLUDE_TOOLS)
+    assert seen["env"]["TE_SIDECALL"] == "1"
+    assert "te-side-" in os.path.basename(seen["cwd"])
+    assert "--model" not in cmd                                  # the person's default model
+
+
+@pytest.mark.real_sidecalls
+def test_the_side_call_takes_a_model_and_notes_a_run_that_answered_nothing(monkeypatch,
+                                                                           tmp_path):
+    from tokeneconomizer.plugin import sidecall
+    monkeypatch.setenv("TOKENECONOMIZER_HOME", str(tmp_path))
+    seen = []
+
+    def fake_run(cmd, **kw):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 55, stdout="", stderr="")
+
+    monkeypatch.setattr(sidecall.subprocess, "run", fake_run)
+    monkeypatch.setattr(sidecall, "program", lambda cli: [cli])
+    assert sidecall.qwen_call("PROMPT", model="qwen/qwen3-coder") == ("", None)
+    assert seen[0][seen[0].index("--model") + 1] == "qwen/qwen3-coder"
+    # One line, and not the command: the prompt is session content on argv.
+    log = (tmp_path / "errors.log").read_text(encoding="utf-8")
+    assert "sidecall qwen: no reply (exit 55)" in log and "PROMPT" not in log
+
+
+def test_qwen_has_a_runner_and_a_notice_names_its_command():
+    """The loop guard's judge and micro-skills' proposer get a runner here, so neither waits on
+    a device-local model; a notice names the command that ran, and qwen takes the prompt as a
+    positional (its `-p` is deprecated)."""
+    from tokeneconomizer.plugin import config as live_config, sidecall
+    assert "qwen" not in sidecall.NO_SIDE_CALLS
+    assert sidecall.runner_for("qwen", live_config.LiveConfig()) is not None
+    assert sidecall.call_name("qwen") == "qwen"
+
+
+def test_the_live_tool_call_is_renamed_into_the_mechanisms_vocabulary():
+    """A hook payload names the tool as Qwen Code registers it (`tool_name` is the tool's own
+    `name`, 0.28.0). The mechanisms key on their own vocabulary, so the adapter renames it --
+    without that, `canon_tool` sees no `bash`, the guard reads no command to take a test status
+    from, and `claude_success_code` answers None for a success."""
+    host = hosts.QwenCode()
+    ok = {"hook_event_name": "PostToolUse", "tool_name": "run_shell_command",
+          "tool_input": {"command": "pytest -q", "description": "run the tests"},
+          "tool_response": "1 passed in 0.1s"}
+    assert host.tool_call(ok) == ("Bash", {"command": "pytest -q"}, "1 passed in 0.1s", 0)
+    read = {"hook_event_name": "PostToolUse", "tool_name": "read_file",
+            "tool_input": {"file_path": "/w/x.py", "offset": 4}, "tool_response": "src"}
+    assert host.tool_call(read)[:2] == ("Read", {"file_path": "/w/x.py", "offset": 4})
+    fail = {"hook_event_name": "PostToolUseFailure", "tool_name": "run_shell_command",
+            "tool_input": {"command": "pytest -q"}, "error": "Exit code 1\nFAILED"}
+    name, args, text, code = host.tool_call(fail)
+    assert (name, args, code) == ("Bash", {"command": "pytest -q"}, 1) and "FAILED" in text
+
+
+def test_the_guard_sees_a_qwen_shell_run_as_a_verification():
+    """What the rename buys: a qwen `run_shell_command` running the tests counts as the turn's
+    verification, so a turn that ends on a failing run is not 'ended green' and does not feed the
+    envelope -- the proxy the guard's thresholds are learned from. The failure arrives as a
+    `PostToolUseFailure`, as on Claude Code: a `PostToolUse` is a success, read as exit 0."""
+    from tokeneconomizer import loopguard
+    host = hosts.QwenCode()
+
+    def turn(shell_payload):
+        g = loopguard.TurnGuard(turn_key="t")
+        edit = {"hook_event_name": "PostToolUse", "tool_name": "edit",
+                "tool_input": {"file_path": "/r/a.py", "old_string": "x", "new_string": "y"},
+                "tool_response": "ok"}
+        for p in (edit, shell_payload):
+            g.fold(*host.tool_call(p))
+        return g.resolved_proxy()
+
+    passed = {"hook_event_name": "PostToolUse", "tool_name": "run_shell_command",
+              "tool_input": {"command": "pytest -q"}, "tool_response": "1 passed in 0.1s"}
+    failed = {"hook_event_name": "PostToolUseFailure", "tool_name": "run_shell_command",
+              "tool_input": {"command": "pytest -q"},
+              "error": "Exit code 1\nFAILED tests/test_a.py::test_x - AssertionError"}
+    assert turn(passed) is True
+    assert turn(failed) is False

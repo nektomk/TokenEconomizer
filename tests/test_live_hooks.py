@@ -332,6 +332,12 @@ def _stuck(host, n=40):
     if host in ("claude", "codex"):
         return stuck_calls(n, host if host == "codex" else None)
     fail = "FAILED tests/test_a.py::test_x - AssertionError: assert 1 == 2"
+    if host == "qwen":
+        # Qwen Code's own tool names in the payload; its `tool_response` shape is Claude Code's.
+        return [("edit", {"file_path": "/r/pkg/a.py", "old_string": "x", "new_string": "y"}, "ok")
+                if k % 2 == 0 else
+                ("run_shell_command", {"command": "pytest -q"}, claude_failed(fail))
+                for k in range(n)]
     if host == "droid":
         return [("Edit", {"file_path": "/r/pkg/a.py", "old_string": "x", "new_string": "y"},
                  {"output": "ok", "exitCode": 0}) if k % 2 == 0 else
@@ -350,7 +356,7 @@ def _stuck(host, n=40):
             for k in range(n)]
 
 
-@pytest.mark.parametrize("host", ["claude", "codex", "copilot", "pi", "droid"])
+@pytest.mark.parametrize("host", ["claude", "codex", "copilot", "pi", "droid", "qwen"])
 @pytest.mark.parametrize("mode", ["interactive", "headless"])
 @pytest.mark.parametrize("setting", ["nudge", "stop"])
 def test_the_guard_redirects_then_tells_the_person_how_to_stop_on_every_agent(
@@ -358,7 +364,7 @@ def test_the_guard_redirects_then_tells_the_person_how_to_stop_on_every_agent(
     """One ladder everywhere: a redirect to the model, then one notice to the person with the
     agent's way to stop the turn. The plugin never stops it -- `stop` is read as `nudge`."""
     env = dict(env, TE_MODE=mode, TE_LOOPGUARD=setting)
-    green = [("Read", {"file_path": "/r/a.py"}, "ok")] * 8
+    green = [("read_file" if host == "qwen" else "Read", {"file_path": "/r/a.py"}, "ok")] * 8
     for k in range(5):
         _guard_turn(env, repo, "s", f"g{k}", green, host)
     outs = _guard_turn(env, repo, "s", "stuck", _stuck(host), host)
@@ -380,9 +386,10 @@ def test_the_guard_redirects_then_tells_the_person_how_to_stop_on_every_agent(
     assert len(stuck) == 1                                             # one notice
     hint = hosts.HOSTS[host]().stop_hint(mode == "headless")
     assert stuck[0].endswith(hint)
-    if host == "claude":
-        # Claude Code keeps hook messages out of the main view, so the notice also goes to the
-        # model, word for word, to pass on in its reply; the redirect comes first.
+    if host in ("claude", "qwen"):
+        # Claude Code keeps hook messages out of the main view, and Qwen Code relays them the
+        # same way (`relays_notices`), so the notice also goes to the model, word for word, to
+        # pass on in its reply; the redirect comes first.
         redirect, relay = to_model
         assert "Process check (automated)" in redirect
         assert stuck[0] in relay and "it does not change your task" in relay
