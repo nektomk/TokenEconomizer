@@ -48,7 +48,7 @@ person can tune by hand:
   * repomap, repomap_tokens, repomap_python, repomap_timeout -- the opt-in repository map;
   * <agent>_paid_model          -- the model of the plugin's own calls on that agent, over
                                    `paid_model` (claude, codex, copilot, pi, opencode, cursor,
-                                   grok, hermes, droid);
+                                   grok, hermes, droid, qwen);
   * claude_paid_effort, codex_paid_effort -- their reasoning effort on those two agents;
   * local_model, local_roles   -- run the named side calls (`judge`, `nudge`, `proposer`;
                                    default `judge`) on an on-device model instead of the
@@ -207,6 +207,7 @@ class LiveConfig:
     grok_paid_model: str = ""
     hermes_paid_model: str = ""
     droid_paid_model: str = ""
+    qwen_paid_model: str = ""
     claude_paid_effort: str = ""
     codex_paid_effort: str = ""
     local_model: str = "off"
@@ -337,7 +338,8 @@ class LiveConfig:
 _ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow",
         "TE_PAID_MODEL": "paid_model", "TE_VOCABULARY": "vocabulary",
         **{f"TE_{a.upper()}_PAID_MODEL": f"{a}_paid_model" for a in (
-            "claude", "codex", "copilot", "pi", "opencode", "cursor", "grok", "hermes", "droid")},
+            "claude", "codex", "copilot", "pi", "opencode", "cursor", "grok", "hermes", "droid",
+            "qwen")},
         "TE_CLAUDE_PAID_EFFORT": "claude_paid_effort", "TE_CODEX_PAID_EFFORT": "codex_paid_effort",
         "TE_LOCAL_MODEL": "local_model", "TE_LOCAL_ROLES": "local_roles",
         "TE_LOCAL_JUDGE_CONFIDENCE": "local_judge_confidence",

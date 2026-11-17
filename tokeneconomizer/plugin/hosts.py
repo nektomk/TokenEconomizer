@@ -1356,47 +1356,41 @@ class QwenCode(Host):
         return str(env.get("TE_SESSION_ID") or env.get("QWEN_CODE_SESSION_ID") or "")
 
     def headless(self, env, transcript=None):
-        # Qwen Code runs headless when invoked with `-p` (one-shot prompt) or when no person
-        # is attending the session. The environment variable QWEN_CODE_SESSION_ATTENDED marks
-        # an interactive session (1 = attended, 0 = headless).
-        attended = str(env.get("QWEN_CODE_SESSION_ATTENDED", "")).strip()
-        if attended in ("0", "1"):
-            return attended == "0"
-        return str(env.get("QWEN_CODE_ENTRYPOINT", "")).startswith("sdk")
+        # Qwen Code marks an interactive terminal session with QWEN_CODE (verified against
+        # 0.27.4), and a one-shot headless run (`qwen -p "..."`) leaves it unset.
+        return not env.get("QWEN_CODE")
+
+    # -- the finished session ---------------------------------------------------------------
+    # Qwen Code's transcript is not Claude Code's format: records carry `type`
+    # (user/system/assistant/tool_result) with the payload under `message`, plus a
+    # `usageMetadata` block for token accounting. Probed against a live log on 2026-11-17:
+    # every claude reader parses it to zero calls and zero tokens without raising -- a silent
+    # empty read. That is worse than a crash here, because `mechanism_trace` runs before
+    # `session_usage` in fold: an empty trajectory would let micro-skills learn nothing and
+    # tool pruning score every tool as unused, commit that state, and only then hit the
+    # ledger. So each reader refuses loudly until `trace/qwen.py` exists. The refusal happens
+    # before the ledger is written and before any mechanism state is committed, so a folded
+    # Qwen Code session is never counted as having spent zero tokens; the detached `te fold`
+    # process dies with the reason in `<store>/fold.log`, and the session stays pending for
+    # the moment the reader lands.
+    def mechanism_trace(self, transcript_path, workdir):
+        raise NotImplementedError(
+            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
 
     def session_usage(self, transcript_path):
-        return trace.claude_session_usage(transcript_path)
+        raise NotImplementedError(
+            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
 
     def prompt_count(self, transcript_path):
-        return trace.claude_prompt_count(transcript_path)
+        raise NotImplementedError(
+            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
 
     def tool_usage(self, trace_path):
-        return trace.claude_tool_usage(os.path.realpath(trace_path))
+        raise NotImplementedError(
+            "reading Qwen Code sessions needs trace/qwen.py; no reader yet")
 
-    keeps_history = True
-
-    def history(self, env, extra_dirs=()):
-        """Every top-level log under `$QWEN_CONFIG_DIR/projects` (else `~/.qwen/projects`)."""
-        dirs = [trace.claude_projects_dir(env)]
-        for d in extra_dirs or ():
-            d = os.path.expanduser(str(d))
-            dirs.append(os.path.join(d, "projects") if os.path.isdir(os.path.join(d, "projects"))
-                        else d)
-        out, seen, seen_dirs = [], set(), set()
-        for d in dirs:
-            real = os.path.realpath(d)
-            if real in seen_dirs:
-                continue
-            seen_dirs.add(real)
-            for folder, path, mtime, size in trace.claude_history_logs(d):
-                sid = os.path.basename(path)[:-len(".jsonl")]
-                if sid in seen:
-                    continue
-                seen.add(sid)
-                out.append({"session_id": sid, "folder": folder, "path": path, "mtime": mtime,
-                            "size": size})
-        return out
-
+    keeps_history = False   # qwen logs sit under ~/.qwen/projects/<slug>/chats/, not Claude's
+                            # layout; the history() override scanned the wrong tree and is removed
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "droid": Droid,
          "opencode": OpenCode, "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,
@@ -1460,8 +1454,4 @@ def detect(payload, env=None, hint=None):
     # tag a Claude Code session started from inside Copilot -- hence the transcript test first.)
     if not tp and (env or {}).get("COPILOT_PLUGIN_ROOT"):
         return Copilot()
-    # Qwen Code marks its hook processes with QWEN_PLUGIN_ROOT. The transcript test comes first,
-    # so a Qwen Code session started from inside another agent is still read as Qwen Code's.
-    if not tp and (env or {}).get("QWEN_PLUGIN_ROOT"):
-        return QwenCode()
     return ClaudeCode()
