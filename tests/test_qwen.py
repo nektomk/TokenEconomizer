@@ -543,6 +543,26 @@ def test_the_qwen_manifest_declares_every_event_it_is_wired_for():
             assert "--host qwen" in hook["command"], event
 
 
+def test_the_qwen_hook_commands_carry_no_quotes():
+    """Qwen Code runs a hook as `spawn(command, [], {shell: true})`, which on Windows reaches
+    cmd.exe as one argv element, and libuv escapes the inner `"` to `\\"` on the way. cmd.exe has
+    no `\\"` rule -- it takes the backslash-quote as part of the program name -- so every quoted
+    launcher fails with `"...\te-hook.cmd" is not recognized`, the hook answers nothing, and the
+    plugin never runs. Verified live 2026-11-18: with the quotes the debug log reads
+    `Hook ... ended for event SessionStart: failed` for all six events and no state directory is
+    created; without them it reads `: success` and the session is recorded.
+
+    POSIX is the other half: there the same string goes to `/bin/sh -c` unescaped, so quotes work
+    and an unquoted path would break on a home directory with a space. The unquoted form is the
+    one that runs on both, and it costs a person whose install path contains a space -- which on
+    Windows was already broken -- so it is the only shape that works at all."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = json.load(open(os.path.join(repo_root, "plugin", "qwen-extension.json"), encoding="utf-8"))
+    for event, groups in d["hooks"].items():
+        for hook in groups[0]["hooks"]:
+            assert '"' not in hook["command"], event
+
+
 def test_qwen_plugin_packaging(tmp_path):
     """The bundle Qwen Code can install. It copies the extension directory, so an installed copy
     of `plugin/` alone carries `lib/tokeneconomizer` as it is in the checkout -- where git cannot

@@ -871,8 +871,8 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   around it: hooks come from `plugin/qwen-extension.json`, every one passing `--host qwen`;
   `prompt_id` stamps a prompt-turn; context goes back as `hookSpecificOutput.additionalContext`
   and a notice as `systemMessage`, which Qwen Code relays through the model
-  (`relays_notices`); a failed call is reported only as `PostToolUseFailure`. Three things differ,
-  each verified live on 2026-11-17:
+  (`relays_notices`); a failed call is reported only as `PostToolUseFailure`. Four things differ,
+  each verified live on 2026-11-17 and 18:
   * **Tool names.** A payload names the tool as Qwen Code registers it — `run_shell_command`,
     `read_file`, `write_file`, `grep_search` (`tool_name` is the tool's own `name`) — while the
     mechanisms key on their own vocabulary. The adapter renames it, as the session reader does;
@@ -894,6 +894,25 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
     is simply not excluded, which costs tokens and changes nothing else. The call leaves a session
     log of its own, which no hook tracks and nothing folds, as on Grok. Its usage is in the run's
     `result` event.
+  * **Hook commands must carry no quotes.** Qwen Code runs a hook as
+    `spawn(command, [], {shell: true})`, which on Windows reaches `cmd.exe` as one argv element
+    with its inner `"` escaped to `\"` — and `cmd.exe` has no `\"` rule, taking the backslash-quote
+    as part of the program name. Quoted launchers therefore fail every event: the debug log reads
+    `Hook ... ended for event SessionStart: failed`, no state directory is created, and the plugin
+    is inert while the install itself looks fine. Measured 2026-11-18: with quotes, all six events
+    fail; without them, `: success` (SessionStart 820 ms, UserPromptSubmit 423 ms, Stop 382 ms) and
+    the turn is recorded. On POSIX the same string goes to `/bin/sh -c` unescaped, so quotes work
+    there and an unquoted path would break on a home directory holding a space — the unquoted form
+    is the only one that runs on both, and it costs anyone whose install path contains a space,
+    which on Windows was already broken. A test pins it.
+* **Installing it.** `python scripts/build_plugin.py --qwen` writes `dist/tokeneconomizer-qwen/`
+  and `qwen extensions install --consent <that>/tokeneconomizer` installs it: without `--consent`
+  Qwen Code asks whether to trust the source and, with no console to answer in, exits having
+  installed nothing. The bundle is not optional. Qwen Code installs by **copying** the directory,
+  and in a checkout whose symlinks git could not create, `plugin/lib/tokeneconomizer` is a plain
+  21-byte file holding a relative path, so a copy of `plugin/` alone ships the stub and the hook
+  finds no core. `build_qwen` puts a real copy of the package in `lib/` instead, which
+  `te_bootstrap.core_path()` reads first — verified in the installed copy.
 * **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s
