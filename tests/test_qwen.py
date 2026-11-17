@@ -9,6 +9,7 @@ from tokeneconomizer import trace
 from tokeneconomizer.plugin import accounting, hosts
 from tokeneconomizer.plugin.paths import repo_identity, repo_state_dir, state_root
 from tokeneconomizer.plugin.store import Store
+from tests.test_live_hooks import env, repo  # noqa: F401
 
 
 def _user(sid, text, uuid, cwd=None, prompt_id=None, provenance="real_user"):
@@ -178,6 +179,99 @@ def test_host_headless_and_session_id_use_the_real_markers(monkeypatch):
     assert host.env_session_id({"QWEN_CODE_SESSION_ID": "abc"}) == "abc"
     assert host.env_session_id({"TE_SESSION_ID": "te-1"}) == "te-1"
     assert host.env_session_id({}) == ""
+
+
+# ---- tool pruning ---------------------------------------------------------------------------
+def _qwen_catalog(env, tools):
+    """The tool list a fresh session loads, as `te toolprune refresh-catalog` would record it.
+    Qwen Code has no probe for this (its log names only the tools it called), so a repository's
+    pruning can drop nothing until the catalog is known -- which is what these tests seed."""
+    d = os.path.join(env["TOKENECONOMIZER_HOME"], "hosts", "qwen")
+    os.makedirs(d, exist_ok=True)
+    json.dump({"tools": tools}, open(os.path.join(d, "catalog.json"), "w"))
+
+
+def _qwen_store(env, repo):
+    return Store(repo_state_dir(repo_identity(repo, env), "qwen", env))
+
+
+def _disabled(settings):
+    return json.load(open(settings, encoding="utf-8"))["tools"]["disabled"]
+
+
+def test_toolprune_writes_tools_disabled(env, repo):
+    """The lever is `tools.disabled` in the repository's `.qwen/settings.json`: a name there is
+    never registered, so its schema leaves the request -- unlike `permissions.deny`, which
+    exempts MCP tools and leaves their schemas billed. The writer is the shared JSON-list one;
+    only the key path is this host's, and the rule names are the aliases the documentation
+    accepts, so a proposal crosses unchanged."""
+    from tokeneconomizer.plugin import denylist
+
+    settings = denylist.settings_path(repo, "qwen")
+    os.makedirs(os.path.dirname(settings))
+    # A rule the person wrote themselves is theirs: it must survive what the plugin takes back.
+    json.dump({"tools": {"disabled": ["todo_write"]}}, open(settings, "w", encoding="utf-8"))
+
+    store = _qwen_store(env, repo)
+    assert denylist.supports("qwen") and denylist.unit("qwen") == "tool"
+    assert denylist.apply(repo, ["WebSearch", "Bash"], store, host="qwen") == ["WebSearch", "Bash"]
+    assert _disabled(settings) == ["todo_write", "WebSearch", "Bash"]
+    assert denylist.apply(repo, ["Bash"], store, host="qwen") == []        # idempotent
+    assert denylist.restore(repo, store, ["Bash"], host="qwen") == ["Bash"]
+    assert _disabled(settings) == ["todo_write", "WebSearch"]
+    assert denylist.restore(repo, store, host="qwen") == ["WebSearch"]      # all of ours
+    assert _disabled(settings) == ["todo_write"]
+
+
+def test_toolprune_created_settings_stay_out_of_git(env, repo):
+    """A per-repository deny list is per-user: when the plugin creates the file it keeps it out
+    of the commit that would otherwise carry it to everyone."""
+    from tokeneconomizer.plugin import denylist
+
+    assert denylist.apply(repo, ["Workflow"], _qwen_store(env, repo), host="qwen") == ["Workflow"]
+    exclude = open(os.path.join(repo, ".git", "info", "exclude"), encoding="utf-8").read()
+    assert "/.qwen/settings.json" in exclude
+
+
+def test_toolprune_auto_applies_from_folded_qwen_sessions(env, repo, tmp_path):
+    """The whole path on this host: five folded sessions plus a known catalog form a proposal,
+    and under the default `auto` the fold writes it into `.qwen/settings.json`. Protected tools
+    (the work surface, a person's AskUserQuestion, the web) are never in it."""
+    from tokeneconomizer.plugin import denylist
+
+    env = dict(env, TE_TOOLPRUNE="auto")
+    _qwen_catalog(env, ["Bash", "Read", "Edit", "Write", "AskUserQuestion", "Workflow",
+                        "CronCreate", "ShareOnboardingGuide", "WebFetch"])
+    from test_live_hooks import call
+    chats = tmp_path / "chats"
+    chats.mkdir()
+    for i in range(5):
+        sid = f"p{i}"
+        path = _write(chats, sid, [
+            _user(sid, f"look at a.py {i}", f"u{i}", cwd=repo),
+            _assistant(sid, f"a{i}", "qwen/qwen3-x", cwd=repo, usage=USAGE,
+                       calls=[(f"c{i}r", "read_file", {"file_path": f"{repo}/a.py"}),
+                              (f"c{i}b", "run_shell_command", {"command": "ls"})]),
+            _result(sid, f"c{i}r", "read_file", output="x"),
+            _result(sid, f"c{i}b", "run_shell_command", output="a.py"),
+        ])
+        base = {"session_id": sid, "cwd": repo, "transcript_path": path}
+        call(env, dict(base, hook_event_name="SessionStart", source="startup"), "qwen")
+        call(env, dict(base, hook_event_name="SessionEnd", reason="other"), "qwen")
+
+    settings = denylist.settings_path(repo, "qwen")
+    assert sorted(_disabled(settings)) == ["CronCreate", "ShareOnboardingGuide", "Workflow"]
+    assert _qwen_store(env, repo).read("untool.json")["proposal"] == []
+
+
+def test_toolprune_refresh_catalog_degrades_for_qwen(env, repo, monkeypatch, capsys):
+    """`te toolprune refresh-catalog` has no probe here: it says so and returns, rather than
+    raising out of `toolcheck`, which knows only Claude and Copilot."""
+    from tokeneconomizer.plugin import cli
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert cli.main(["--host", "qwen", "--cwd", repo, "toolprune", "refresh-catalog"]) == 0
+    assert "no catalog probe" in capsys.readouterr().out
 
 
 # ---- the micro-skill loop -------------------------------------------------------------------

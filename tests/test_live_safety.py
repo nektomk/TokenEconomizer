@@ -1,7 +1,7 @@
 """What the plugin writes stays where it belongs and stays private.
 
-  * A checkout decides what `.claude`, `.codex`, `.github` and `.git` are, so a write the
-    deny list makes must not follow a symlink, or a `.git` file, out of the repository.
+  * A checkout decides what `.claude`, `.codex`, `.github`, `.qwen` and `.git` are, so a write
+    the deny list makes must not follow a symlink, or a `.git` file, out of the repository.
   * A settings file the plugin cannot parse is the person's: refused, never written over.
   * The state root holds what was derived from the agents' private session logs, and the
     launcher the slash commands run: it is private to its owner.
@@ -28,12 +28,13 @@ def _mode(path):
 
 
 @pytest.mark.parametrize("host,rel", [("claude", ".claude"), ("copilot", ".github"),
-                                      ("codex", ".codex")])
+                                      ("codex", ".codex"), ("qwen", ".qwen")])
 def test_a_symlinked_settings_directory_is_refused(repo, tmp_path, host, rel):
     outside = tmp_path / "outside"
     outside.mkdir()
     symlink_or_skip(outside, os.path.join(repo, rel))
-    item = {"claude": "Workflow", "copilot": "github-mcp-server", "codex": "goals"}[host]
+    item = {"claude": "Workflow", "copilot": "github-mcp-server", "codex": "goals",
+            "qwen": "WebSearch"}[host]
     with pytest.raises(RuntimeError, match="symlink"):
         denylist.apply(repo, [item], Store(str(tmp_path / "st")), host=host)
     assert list(outside.rglob("*")) == []

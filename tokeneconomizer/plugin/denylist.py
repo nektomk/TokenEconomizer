@@ -20,8 +20,20 @@ session start, and the unit of removal is whatever that file can express:
     trusted folder (Copilot's `trustedFolders`). Copilot has no persistent per-tool filter
     (`--excluded-tools` is a launch flag; `permissions.deny` refuses calls but leaves the schema
     in the request), so a server is proposed only when every one of its tools has gone unused.
+  * Qwen Code -- a TOOL, through `tools.disabled` in the repository's `.qwen/settings.json`.
+    Verified against the settings documentation bundled with 0.27.4: a name there is hidden
+    from the registry entirely -- never registered, so it is absent from `/tools` and its
+    schema leaves the request, which is what a per-repository proposal needs. `permissions.deny`
+    would be the familiar lever but is weaker here: it removes built-ins only, and exempts MCP
+    tools, whose schemas stay billed. The names a proposal carries (`Bash`, `Read`, `Grep`) are
+    aliases that documentation accepts in both keys, so they cross unchanged. No folder-trust
+    gate covers these arrays, as it does for Codex and Copilot, so `apply` checks nothing.
+    Not measured: `toolcheck` has no Qwen probe -- no init event to read a tool list from, no
+    local capture of its request -- so the removal rests on the documentation above; and with
+    no catalog to compare against, pruning can propose only a tool some session actually
+    called and then went idle on, never one a session loads but has not tried.
 
-Rules common to all three:
+Rules common to all four:
 
   * `toolprune: auto` (the default) writes the file once a proposal forms and the repository's
     sessions have been idle for `toolprune_quiet_minutes` (`fold.apply_pending`), and the next
@@ -52,9 +64,11 @@ from . import adapter as live_adapter
 SETTINGS_REL = os.path.join(".claude", "settings.local.json")
 CODEX_CONFIG_REL = os.path.join(".codex", "config.toml")
 COPILOT_SETTINGS_REL = os.path.join(".github", "copilot", "settings.local.json")
+QWEN_SETTINGS_REL = os.path.join(".qwen", "settings.json")
 
-_SETTINGS = {"claude": SETTINGS_REL, "codex": CODEX_CONFIG_REL, "copilot": COPILOT_SETTINGS_REL}
-_UNITS = {"claude": "tool", "codex": "capability", "copilot": "MCP server"}
+_SETTINGS = {"claude": SETTINGS_REL, "codex": CODEX_CONFIG_REL, "copilot": COPILOT_SETTINGS_REL,
+             "qwen": QWEN_SETTINGS_REL}
+_UNITS = {"claude": "tool", "codex": "capability", "copilot": "MCP server", "qwen": "tool"}
 
 # Codex capability -> (table or None for top level, key, TOML value). Each probed project-local
 # on 0.153.1 (see the module docstring); `te_harness.codex` holds the launch-time superset.
@@ -236,9 +250,13 @@ def _record(store, items, path):
     write_applied(store, by)
 
 
-# ---- the JSON-list hosts: Claude Code's deny rules, Copilot's disabled MCP servers -------
+# ---- the JSON-list hosts: Claude's deny rules, Copilot's disabled servers, Qwen's ----------
 def _json_list_keys(host):
-    return ("permissions", "deny") if host == "claude" else (None, "disabledMcpServers")
+    if host == "claude":
+        return ("permissions", "deny")
+    if host == "qwen":
+        return ("tools", "disabled")
+    return (None, "disabledMcpServers")
 
 
 def _apply_json_list(repo_root, items, store, host):

@@ -557,6 +557,11 @@ def cmd_toolprune(args):
             print("Codex needs no catalog: its removable capabilities are a fixed set "
                   f"({', '.join(denylist.CODEX_LIVE_CAPABILITIES)}), read from each session.")
             return 0
+        if host == "qwen":
+            print("Qwen Code has no catalog probe: its session log records only the tools it "
+                  "called, so pruning can propose a tool that went idle after being used, "
+                  "never one it has not tried yet.")
+            return 0
         path, tools = toolcheck.refresh_catalog(state_root(), host=host)
         print(f"{len(tools)} tools recorded in {path}:\n  " + ", ".join(tools))
         return 0
