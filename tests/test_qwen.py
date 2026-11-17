@@ -1,11 +1,14 @@
-"""Qwen Code: the session reader, its host adapter, and usage."""
+"""Qwen Code: the session reader, its host adapter, usage, and the micro-skill loop."""
 import json
+import os
 import time
 
 import pytest
 
 from tokeneconomizer import trace
 from tokeneconomizer.plugin import accounting, hosts
+from tokeneconomizer.plugin.paths import repo_identity, repo_state_dir, state_root
+from tokeneconomizer.plugin.store import Store
 
 
 def _user(sid, text, uuid, cwd=None, prompt_id=None, provenance="real_user"):
@@ -175,3 +178,114 @@ def test_host_headless_and_session_id_use_the_real_markers(monkeypatch):
     assert host.env_session_id({"QWEN_CODE_SESSION_ID": "abc"}) == "abc"
     assert host.env_session_id({"TE_SESSION_ID": "te-1"}) == "te-1"
     assert host.env_session_id({}) == ""
+
+
+# ---- the micro-skill loop -------------------------------------------------------------------
+USAGE = {"promptTokenCount": 1200, "candidatesTokenCount": 120, "thoughtsTokenCount": 10,
+         "totalTokenCount": 1320, "cachedContentTokenCount": 900}
+
+
+def _trap_session(root, sid, repo, i):
+    """A session falling into the trap every session falls into: bare `pytest` is missing
+    here, `python -m pytest` works, and each session edits a different module."""
+    recs = [
+        _user(sid, f"fix bug {i}", f"u{i}", cwd=repo),
+        _assistant(sid, f"a{i}", "qwen/qwen3-x", cwd=repo, usage=USAGE,
+                   calls=[(f"c{i}e", "edit", {"file_path": f"{repo}/pkg/mod{i}.py",
+                                              "old_string": "a", "new_string": "b"}),
+                          (f"c{i}f", "run_shell_command",
+                           {"command": "pytest -q tests/test_a.py"}),
+                          (f"c{i}w", "run_shell_command",
+                           {"command": "python -m pytest -q tests/test_a.py"})]),
+        _result(sid, f"c{i}e", "edit", output="ok"),
+        _result(sid, f"c{i}f", "run_shell_command",
+                error="bash: pytest: command not found", status="error"),
+        _result(sid, f"c{i}w", "run_shell_command", output="1 passed in 0.1s"),
+    ]
+    return _write(root, sid, recs)
+
+
+def _loop_env(state, ceiling):
+    return {"TOKENECONOMIZER_HOME": str(state), "TE_FOLD_SYNC": "1",
+            "TE_MICROSKILLS": "envfacts", "TE_TOOLPRUNE": "off",
+            "GIT_CEILING_DIRECTORIES": str(ceiling), "PATH": os.environ.get("PATH", "")}
+
+
+def _qwen_repo(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / ".git" / "info").mkdir(parents=True)
+    (repo / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    (repo / "pyproject.toml").write_text("[project]\nname='w'\n")
+    return str(repo)
+
+
+def test_envfacts_learn_from_folded_qwen_sessions(tmp_path):
+    """Six Qwen Code sessions folded through the hook teach the free extractor the same fact
+    Claude's sessions teach: the trace `mechanism_trace` writes carries the mechanisms' own
+    tool names, so the learning path needs no Qwen branch."""
+    from test_live_hooks import call
+
+    chats = tmp_path / "chats"
+    chats.mkdir()
+    repo = _qwen_repo(tmp_path)
+    env = _loop_env(tmp_path / "home", tmp_path)
+
+    starts = []
+    for i in range(6):
+        base = {"session_id": f"s{i}", "cwd": repo,
+                "transcript_path": _trap_session(chats, f"s{i}", repo, i)}
+        starts.append(call(env, dict(base, hook_event_name="SessionStart",
+                                     source="startup"), "qwen"))
+        call(env, dict(base, hook_event_name="SessionEnd", reason="other"), "qwen")
+
+    assert all(s == {} for s in starts[:4])       # the fact must clear its firing gate first
+    ctx = starts[4]["hookSpecificOutput"]["additionalContext"]
+    assert "`pytest …` fails here with command not found; `python -m pytest …` works." in ctx
+    store = Store(repo_state_dir(repo_identity(repo, env), "qwen", env))
+    assert store.read("injection.json")["profile"] == "envfacts"
+
+
+def test_a_learned_fact_reaches_the_next_qwen_session(tmp_path):
+    """The offline end to end: the sessions above teach the fact, and the next session start's
+    own stdout carries it in the channel Qwen Code hands the model."""
+    from test_live_hooks import call
+
+    chats = tmp_path / "chats"
+    chats.mkdir()
+    repo = _qwen_repo(tmp_path)
+    env = _loop_env(tmp_path / "home", tmp_path)
+    for i in range(6):
+        base = {"session_id": f"s{i}", "cwd": repo,
+                "transcript_path": _trap_session(chats, f"s{i}", repo, i)}
+        call(env, dict(base, hook_event_name="SessionStart", source="startup"), "qwen")
+        call(env, dict(base, hook_event_name="SessionEnd", reason="other"), "qwen")
+
+    out = call(env, {"session_id": "s9", "cwd": repo, "hook_event_name": "SessionStart",
+                    "source": "startup",
+                    "transcript_path": _trap_session(chats, "s9", repo, 9)}, "qwen")
+    assert "`pytest …` fails here with command not found; `python -m pytest …` works." in \
+        out["hookSpecificOutput"]["additionalContext"]
+
+
+def test_microskills_on_learns_the_free_facts_without_a_proposer(tmp_path):
+    """`on` is envfacts plus the paid proposer, and Qwen Code has no side calls (it is in
+    `sidecall.NO_SIDE_CALLS`, so `optimizer` answers None): the free facts are still learned,
+    the proposer simply never runs, and nothing is recorded as an error."""
+    from test_live_hooks import call
+
+    chats = tmp_path / "chats"
+    chats.mkdir()
+    repo = _qwen_repo(tmp_path)
+    env = _loop_env(tmp_path / "home", tmp_path)
+    env["TE_MICROSKILLS"] = "envfacts+distiller"
+
+    for i in range(6):
+        base = {"session_id": f"s{i}", "cwd": repo,
+                "transcript_path": _trap_session(chats, f"s{i}", repo, i)}
+        call(env, dict(base, hook_event_name="SessionStart", source="startup"), "qwen")
+        call(env, dict(base, hook_event_name="SessionEnd", reason="other"), "qwen")
+
+    store = Store(repo_state_dir(repo_identity(repo, env), "qwen", env))
+    assert store.read("injection.json")["profile"] == "envfacts+distiller"
+    assert "`python -m pytest" in store.read("injection.json")["rendered"]
+    assert not os.path.exists(os.path.join(state_root(env), "errors.log"))
