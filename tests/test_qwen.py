@@ -527,3 +527,83 @@ def test_the_guard_sees_a_qwen_shell_run_as_a_verification():
               "error": "Exit code 1\nFAILED tests/test_a.py::test_x - AssertionError"}
     assert turn(passed) is True
     assert turn(failed) is False
+
+
+# ---- packaging ------------------------------------------------------------------------------
+def test_the_qwen_manifest_declares_every_event_it_is_wired_for():
+    """The extension is the manifest and nothing else: Qwen Code reads `qwen-extension.json` at
+    the extension root, and the six events are the ones the controller answers."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = json.load(open(os.path.join(repo_root, "plugin", "qwen-extension.json"), encoding="utf-8"))
+    assert d["name"] == "tokeneconomizer"
+    assert list(d["hooks"]) == ["SessionStart", "UserPromptSubmit", "PostToolUse",
+                                "PostToolUseFailure", "Stop", "SessionEnd"]
+    for event, groups in d["hooks"].items():
+        for hook in groups[0]["hooks"]:
+            assert "--host qwen" in hook["command"], event
+
+
+def test_qwen_plugin_packaging(tmp_path):
+    """The bundle Qwen Code can install. It copies the extension directory, so an installed copy
+    of `plugin/` alone carries `lib/tokeneconomizer` as it is in the checkout -- where git cannot
+    make a symlink it writes a plain file holding the relative path, and the hook then finds no
+    core and answers `{}`. The bundle puts the real package there instead."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "build_plugin_qwen", os.path.join(repo_root, "scripts", "build_plugin.py"))
+    build_plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_plugin)
+    out = tmp_path / "qwen-bundle"
+    plugin = build_plugin.build_qwen(str(out))
+
+    # The manifest is at the root, which is where Qwen Code looks for it, and the package is a
+    # real copy inside lib/, not the checkout's stub.
+    assert plugin == str(out / "tokeneconomizer")
+    assert json.load(open(os.path.join(plugin, "qwen-extension.json"),
+                          encoding="utf-8"))["name"] == "tokeneconomizer"
+    lib_pkg = os.path.join(plugin, "lib", "tokeneconomizer")
+    assert os.path.isdir(lib_pkg)
+    assert os.path.isfile(os.path.join(lib_pkg, "plugin", "hook.py"))
+    assert os.path.isfile(os.path.join(plugin, "scripts", "te-hook.cmd"))
+    assert not list(__import__("pathlib").Path(plugin).rglob("__pycache__"))
+
+    # Only what Qwen Code loads: another agent's manifest would describe the same directory as a
+    # plugin of that agent, and Qwen Code converts several of those layouts on its own. Its hooks
+    # are already inline in the manifest, so `hooks/` would risk registering them twice.
+    for foreign in (".claude-plugin", ".codex-plugin", ".cursor-plugin", ".github",
+                    ".factory-plugin", ".antigravity-plugin", "hooks", "hooks.json",
+                    "codex-skills", "hermes", "opencode", "pi", "slash-commands",
+                    "package.json"):
+        assert not os.path.exists(os.path.join(plugin, foreign)), foreign
+
+    # Qwen Code installs a local path, so no marketplace file is written around it.
+    assert os.listdir(str(out)) == ["tokeneconomizer"]
+
+    # The proof the bundle exists for: the launcher finds the core through its own lib/, with
+    # nothing above it. Loaded from the bundle's path, so __file__ resolves inside the bundle.
+    spec = importlib.util.spec_from_file_location(
+        "te_bootstrap_bundled", os.path.join(plugin, "scripts", "te_bootstrap.py"))
+    te_bootstrap = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(te_bootstrap)
+    assert te_bootstrap.core_path() == os.path.join(plugin, "lib")
+
+
+def test_build_plugin_chooses_one_layout(tmp_path):
+    """`--qwen` and `--droid` write different directories, so naming both is refused rather than
+    silently writing one of them; with no flag the default stays the Claude marketplace."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "build_plugin_main", os.path.join(repo_root, "scripts", "build_plugin.py"))
+    build_plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(build_plugin)
+    try:
+        build_plugin.main(["--droid", "--qwen", "--out", str(tmp_path / "x")])
+    except SystemExit as e:
+        assert e.code != 0
+    else:
+        raise AssertionError("--droid with --qwen was accepted")
+    assert build_plugin.main(["--qwen", "--out", str(tmp_path / "q")]) == 0
+    assert os.path.isdir(os.path.join(str(tmp_path / "q"), "tokeneconomizer", "lib",
+                                      "tokeneconomizer"))

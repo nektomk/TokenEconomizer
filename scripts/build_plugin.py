@@ -3,6 +3,7 @@
 
     python scripts/build_plugin.py [--out dist/marketplace] [--zip]
     python scripts/build_plugin.py --droid [--out dist/tokeneconomizer-droid]
+    python scripts/build_plugin.py --qwen  [--out dist/tokeneconomizer-qwen]
 
 Why a build step at all. Loaded in place -- `claude --plugin-dir plugin/`, or this repository
 added as a local-directory marketplace -- the plugin finds the core package one level up, in the
@@ -20,6 +21,10 @@ repository of its own, or zip for `claude --plugin-url`):
 
     <out>/.claude-plugin/marketplace.json
     <out>/tokeneconomizer/              the plugin, with lib/tokeneconomizer copied in
+
+`--qwen` writes no marketplace file: Qwen Code installs a local path directly
+(`qwen extensions install <out>/tokeneconomizer`), and its manifest is the extension's own
+`qwen-extension.json` at that directory's root.
 """
 import argparse
 import json
@@ -120,6 +125,40 @@ def build_droid(out):
     return plugin_out
 
 
+def build_qwen(out):
+    """The same bundle laid out as a Qwen Code extension, for
+    `qwen extensions install <out>/tokeneconomizer`.
+
+    Qwen Code installs a local path by COPYING the directory (`fs.cp(..., dereference: true)`),
+    and reads its manifest as `qwen-extension.json` at the extension root. A copy of `plugin/`
+    alone is therefore not enough: `lib/tokeneconomizer` is a symlink in a checkout that can make
+    one, but where it cannot (Windows without symlink support) git writes it as a plain file
+    holding the relative path, and the copy carries that stub instead of the package -- so the
+    hook would find no core and answer `{}`. The bundle replaces the stub with a real copy, which
+    `scripts/te_bootstrap.py` looks for first.
+
+    Only what Qwen Code loads ships. The other agents' manifests and hook files would describe the
+    same directory as a Claude, Codex, Copilot, Cursor, Droid, Pi or Antigravity plugin --
+    `.claude-plugin/plugin.json` and `hooks/hooks.json` are among the layouts Qwen Code converts
+    on its own -- and Qwen Code's hooks are already declared inline in `qwen-extension.json`, so
+    `hooks/` would only risk registering them twice. Slash commands are not declared by the
+    manifest either, and are left out for the same reason."""
+    out = os.path.abspath(out)
+    plugin_out = os.path.join(out, "tokeneconomizer")
+    if os.path.exists(plugin_out):
+        shutil.rmtree(plugin_out)
+    shutil.copytree(os.path.join(REPO, "plugin"), plugin_out,
+                    ignore=shutil.ignore_patterns(
+                        "__pycache__", "*.pyc", ".pytest_cache", ".DS_Store", "lib",
+                        ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".github",
+                        ".factory-plugin", ".antigravity-plugin", "hooks.json", "hooks",
+                        "codex-skills", "hermes", "opencode", "pi", "slash-commands",
+                        "package.json", "*.md.bak"))
+    shutil.copytree(os.path.join(REPO, "tokeneconomizer"),
+                    os.path.join(plugin_out, "lib", "tokeneconomizer"), ignore=IGNORE)
+    return plugin_out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -127,12 +166,19 @@ def main(argv=None):
     ap.add_argument("--droid", action="store_true",
                     help="write a Factory Droid marketplace instead "
                          "(default <out>: dist/tokeneconomizer-droid)")
+    ap.add_argument("--qwen", action="store_true",
+                    help="write a Qwen Code extension bundle instead "
+                         "(default <out>: dist/tokeneconomizer-qwen)")
     ap.add_argument("--zip", action="store_true",
                     help="also write <out>/../tokeneconomizer-plugin.zip of the plugin directory")
     args = ap.parse_args(argv)
-    if args.droid and args.out == os.path.join(REPO, "dist", "marketplace"):
-        args.out = os.path.join(REPO, "dist", "tokeneconomizer-droid")
-    plugin_out = build_droid(args.out) if args.droid else build(args.out)
+    if args.droid and args.qwen:
+        ap.error("--droid and --qwen write different layouts; choose one")
+    if (args.droid or args.qwen) and args.out == os.path.join(REPO, "dist", "marketplace"):
+        args.out = os.path.join(REPO, "dist",
+                                "tokeneconomizer-qwen" if args.qwen else "tokeneconomizer-droid")
+    plugin_out = (build_droid(args.out) if args.droid
+                  else build_qwen(args.out) if args.qwen else build(args.out))
     print(f"plugin bundle: {plugin_out}")
     print(f"marketplace:   {os.path.abspath(args.out)}")
     if args.zip:
