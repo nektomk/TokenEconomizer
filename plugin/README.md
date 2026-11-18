@@ -706,6 +706,20 @@ Start a new Qwen Code session: hooks are snapshotted at startup.
 **2. Check it.** From a terminal in the repository:
 `~/.tokeneconomizer/bin/te --host qwen status`.
 
+That launcher is a POSIX `sh` script, so on Windows — the only OS this host is verified on —
+`cmd.exe` cannot run it. Drive the CLI through Python against the installed bundle instead:
+
+```bat
+set PYTHONPATH=%USERPROFILE%\.qwen\extensions\tokeneconomizer\lib
+python -m tokeneconomizer.plugin.cli --host qwen --cwd "%CD%" status
+```
+
+After any later change under `tokeneconomizer/`, rebuild and reinstall: the installed copy is a
+snapshot, and `install` refuses to write over an existing extension, so `qwen extensions
+uninstall tokeneconomizer` comes first. Read the installed copy back to confirm — a stale
+`lib/tokeneconomizer/pricing.py` silently changes every figure the plugin reports while
+`qwen extensions list` still says «enabled».
+
 **3. Hook commands carry no quotes.** Qwen Code runs a hook as `spawn(command, [], {shell: true})`,
 which on Windows reaches `cmd.exe` as one argv element with its inner `"` escaped to `\"`;
 `cmd.exe` has no `\"` rule, so a quoted launcher fails with «is not recognized». The same

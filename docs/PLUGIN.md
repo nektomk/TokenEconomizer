@@ -871,7 +871,7 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   around it: hooks come from `plugin/qwen-extension.json`, every one passing `--host qwen`;
   `prompt_id` stamps a prompt-turn; context goes back as `hookSpecificOutput.additionalContext`
   and a notice as `systemMessage`, which Qwen Code relays through the model
-  (`relays_notices`); a failed call is reported only as `PostToolUseFailure`. Four things differ,
+  (`relays_notices`); a failed call is reported only as `PostToolUseFailure`. Five things differ,
   each verified live on 2026-11-17 and 18:
   * **Tool names.** A payload names the tool as Qwen Code registers it — `run_shell_command`,
     `read_file`, `write_file`, `grep_search` (`tool_name` is the tool's own `name`) — while the
@@ -905,6 +905,15 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
     there and an unquoted path would break on a home directory holding a space — the unquoted form
     is the only one that runs on both, and it costs anyone whose install path contains a space,
     which on Windows was already broken. A test pins it.
+  * **`UserPromptSubmit` re-fires inside a prompt-turn.** It arrives again after a tool result
+    with `prompt_id` unchanged, so reading every arrival as a new prompt closed the turn that did
+    the work as interrupted: its outcome never counted, no turn ended green, and the repository's
+    envelope was never written — and without an envelope neither the judge nor the rule fallback
+    may redirect, which left the guard inert on this host. The controller now keeps a re-fire on
+    the open turn, and still closes one whose `prompt_id` differs (a real new prompt, or a turn
+    whose `Stop` never came). Measured 2026-11-18: before, a turn that ran one tool call left an
+    `events.jsonl` record of `tool_calls: 0` and no `envelope.json`; after, one turn of four
+    calls, `resolved_proxy: true`, envelope written. A test pins it.
 * **Installing it.** `python scripts/build_plugin.py --qwen` writes `dist/tokeneconomizer-qwen/`
   and `qwen extensions install --consent <that>/tokeneconomizer` installs it: without `--consent`
   Qwen Code asks whether to trust the source and, with no console to answer in, exits having
@@ -912,7 +921,12 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
   and in a checkout whose symlinks git could not create, `plugin/lib/tokeneconomizer` is a plain
   21-byte file holding a relative path, so a copy of `plugin/` alone ships the stub and the hook
   finds no core. `build_qwen` puts a real copy of the package in `lib/` instead, which
-  `te_bootstrap.core_path()` reads first — verified in the installed copy.
+  `te_bootstrap.core_path()` reads first — verified in the installed copy. Because that copy is a
+  snapshot, a later change under `tokeneconomizer/` does not reach it, and `install` refuses to
+  write over an existing extension («already installed. Please uninstall it first»): rebuild,
+  `qwen extensions uninstall tokeneconomizer`, then install again. Read the installed copy back
+  rather than trusting the exit codes — a stale `lib/tokeneconomizer/pricing.py` silently changes
+  every figure the plugin reports, while `qwen extensions list` still says «enabled».
 * **Known gaps:**
   * `codex exec` prints no hook messages, so a headless Codex run shows no notice; `te status`
     counts it afterwards. On Claude Code the notice reaches the conversation and `claude -p`'s

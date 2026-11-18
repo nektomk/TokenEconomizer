@@ -12,9 +12,9 @@ if the home directory path contains a space.
 | Mechanism | Qwen Code | Why |
 |---|---|---|
 | Micro-skills (repository facts at session start) | yes | `SessionStart` supports `hookSpecificOutput.additionalContext` |
-| History import (learn from earlier sessions) | yes | `~/.qwen/projects/<slug>/chats/<id>.jsonl` has the tool calls and `usageMetadata` |
+| History import (learn from earlier sessions) | **no** | `QwenCode.keeps_history` is off: the log is readable, but the adapter does not name the directory to scan, so `te history import` answers «no session history the plugin reads» |
 | Session cost / effective tokens | yes | the reader extracts usage from each turn's `usageMetadata`; `promptTokenCount` includes cache reads, so `effective_tokens = input - cache_read` |
-| Loop guard (redirect a failing loop) | yes | `PostToolUse` supports `additionalContext`; the judge runs as a side call (`qwen --safe-mode --max-tool-calls 0 --output-format json`) |
+| Loop guard (redirect a failing loop) | yes | `PostToolUse` supports `additionalContext`. Verified live 2026-11-18: a turn repeating one failing test was redirected at the hard backstop with no model call at all. A paid judge is one rung of the cascade, not a prerequisite |
 | Tool pruning | yes | `tools.disabled` in `.qwen/settings.json` (project scope) removes any tool, MCP included; `permissions.deny` is weaker (MCP exempt) |
 
 The side call was verified live on 2026-11-18: `qwen --safe-mode --max-tool-calls 0` with a
@@ -59,6 +59,31 @@ Check it in the repository:
 ~/.tokeneconomizer/bin/te --host qwen --cwd "$PWD" status
 ```
 
+`bin/te` is a POSIX `sh` script. From `cmd.exe` it does not run («is not recognized as an
+internal or external command»), and `python bin\te` is a syntax error, because the file is
+shell code. Drive the CLI through Python instead, pointing `PYTHONPATH` at the installed
+bundle's package:
+
+```bat
+set PYTHONPATH=%USERPROFILE%\.qwen\extensions\tokeneconomizer\lib
+python -m tokeneconomizer.plugin.cli --host qwen --cwd "%CD%" status
+```
+
+**Updating.** The installed copy is a snapshot: a change to `tokeneconomizer/` in this
+checkout does not reach it, and the hooks import the installed copy, not the checkout.
+`qwen extensions install` also refuses to write over an existing extension («already
+installed. Please uninstall it first»), so after any change under `tokeneconomizer/`:
+
+```sh
+python scripts/build_plugin.py --qwen
+qwen extensions uninstall tokeneconomizer
+qwen extensions install --consent "$PWD/dist/tokeneconomizer-qwen/tokeneconomizer"
+```
+
+Verify the installed copy by reading it back rather than trusting the exit codes -- a stale
+`lib/tokeneconomizer/pricing.py` silently changes every figure the plugin reports, and
+`qwen extensions list` reports «enabled» even when nothing of the extension runs.
+
 **Hook commands must carry no quotes.** Qwen Code runs a hook as
 `spawn(command, [], {shell: true})`, which on Windows reaches `cmd.exe` as one argv element
 with its inner `"` escaped to `\"`; `cmd.exe` has no `\"` rule, so a quoted launcher fails
@@ -67,22 +92,24 @@ work there and an unquoted path breaks on a home directory containing a space. T
 form is the only one that runs on both; a Windows install path with a space was already
 broken. A test pins the rule.
 
-## Import the sessions you already ran
+## The sessions you already ran
 
-A plugin installed today knows nothing about yesterday's sessions. Qwen Code's own log
-directory is read by the same history import the other hosts use:
+**History import is not wired for this host.** `te --host qwen history import` answers
+«no session history the plugin reads» and changes nothing, because `QwenCode.keeps_history`
+is off. The log format itself is readable -- `~/.qwen/projects/<slug>/chats/<id>.jsonl`
+carries the tool calls and a `usageMetadata` block per assistant entry -- but the adapter
+does not yet name the directory to scan, and no session id filter is applied. Until it does,
+the plugin learns only from sessions that run after it is installed.
 
-```sh
-~/.tokeneconomizer/bin/te --host qwen --cwd "$PWD" history import
-```
+That has a consequence worth knowing: a repository's loop-guard envelope starts empty, and
+the guard does not act at all until `envelope_min_samples` turns (5 by default) have ended
+green. Neither the judge nor the rule fallback redirects a repository whose usual turns it
+has not learned -- a deliberate resolve-safety choice, not a fault.
 
-The import runs only into a repository with nothing folded yet, folds oldest first, skips
-sessions with no prompt and sessions still being written, and makes no model call.
-`history_import=on` lets the first session start in a repository do it by itself.
-
-Their usage is recorded, but `te status` counts imported sessions apart from the plugin's
-own (`+N from earlier history`), because they ran before it: the totals in
-`sessions ... effective tokens` cover the sessions that end after the plugin is installed.
+A session is folded when it ends. A one-shot run (`qwen "..."`) does not fire `SessionEnd`,
+so its fold waits for the next session start in that repository, which picks up any session
+whose transcript has been quiet for 600 s (`fold.STALE_S`); `te --host qwen fold` folds it
+now instead, and `te --host qwen fold --session <id>` names one.
 
 ## Settings
 
@@ -138,6 +165,24 @@ tracks it and `QwenCode.keeps_history` is off, so nothing folds it.
 - **`qwen_safe_session_id` unused.** The reader exports a function to extract a safe session
   id from the log, but `QwenCode.keeps_history = False`, so the history import is not wired
   for this host. Decide later: wire it or drop the function.
-- **Pricing fallback.** Qwen models are absent from the price table, so totals are shown with
-  `priced_by: fallback` (a placeholder rate). Add qwen entries to `tokeneconomizer/pricing.py`
-  to see real figures.
+- **Pricing is a snapshot, and one ratio differs from every other vendor's.** 14 Qwen models
+  are priced in `tokeneconomizer/pricing.py` from the provider's `/v1/pricing`, cross-checked
+  against the `ratePerMillion` that `/v1/generations` actually bills. A billed id missing from
+  that table is priced on a labelled fallback curve and its record says `priced_by: fallback`,
+  so watch for that in `te status`. Note `qwen3.8-max` bills a cache hit at **0.267x** input
+  (`cacheShare` 4/15), not the 0.1x the other vendors use -- and cache reads are most of an
+  agent turn's tokens, so that one ratio moves every total. Re-check the table when the
+  provider changes its prices.
+- **`headless()` reads an inherited variable.** `QwenCode.headless()` answers from `QWEN_CODE`
+  in the hook's environment, and hooks inherit the parent's environment. A one-shot run
+  launched from inside an interactive Qwen Code session is therefore seen as interactive, and
+  the still-stuck notice says «Press Esc to interrupt it.» where there is no UI to press it in.
+  Cosmetic, but the same flag gates side calls, so unset `QWEN_CODE` when a headless run must
+  be measured as one.
+- **`UserPromptSubmit` fires more than once inside a prompt-turn** -- observed again after a
+  tool result, with `prompt_id` unchanged. The controller keeps such a re-fire on the open turn
+  instead of closing it as interrupted; without that, every turn that did any work was recorded
+  as interrupted, no turn ever ended green, the repository's envelope was never written, and the
+  loop guard could not act at all (neither the judge nor the rule fallback redirects without an
+  envelope). Verified live 2026-11-18: one turn of four calls, `resolved_proxy: true`,
+  `envelope.json` written. A test pins it.
