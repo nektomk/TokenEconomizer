@@ -529,6 +529,47 @@ def test_the_guard_sees_a_qwen_shell_run_as_a_verification():
     assert turn(failed) is False
 
 
+def test_a_refired_prompt_hook_keeps_the_working_turn(env, repo):
+    """Qwen Code re-fires UserPromptSubmit inside one prompt-turn -- once per model request, so
+    again after every tool result, with `prompt_id` unchanged (verified live 2026-11-18: the turn
+    that ran the call was recorded as interrupted, and `envelope.json` was never written). Same
+    key, same turn: it keeps accumulating, so it still ends green and feeds the envelope. Without
+    one the guard may not act at all -- neither the judge nor the rule fallback redirects a
+    repository whose usual turns it has not learned."""
+    from test_live_hooks import _post, call
+    base = {"session_id": "s", "transcript_path": "", "cwd": repo, "prompt_id": "s########0"}
+    prompt = dict(base, hook_event_name="UserPromptSubmit", prompt="go")
+    call(env, prompt, "qwen")
+    call(env, _post(base, "read_file", {"file_path": f"{repo}/a.py"}, "ok"), "qwen")
+    call(env, prompt, "qwen")                      # the re-fire, after the tool result
+    call(env, dict(base, hook_event_name="Stop", stop_hook_active=False), "qwen")
+
+    store = _qwen_store(env, repo)
+    turns = store.read(os.path.join("sessions", "s.json"))["turns"]
+    assert [(t["tool_calls"], t["resolved_proxy"]) for t in turns] == [(1, True)]
+    assert store.read("envelope.json")["resolved_turns"] == [1]
+
+
+def test_a_new_prompt_still_closes_a_turn_whose_stop_never_came(env, repo):
+    """The other side of the re-fire rule: a DIFFERENT `prompt_id` is a new prompt, so a turn left
+    open by an interrupted run is still closed as unknown-outcome and does not feed the envelope."""
+    from test_live_hooks import _post, call
+    base = {"session_id": "s", "transcript_path": "", "cwd": repo}
+    call(env, dict(base, prompt_id="s########0", hook_event_name="UserPromptSubmit",
+                   prompt="go"), "qwen")
+    call(env, _post(dict(base, prompt_id="s########0"), "read_file",
+                    {"file_path": f"{repo}/a.py"}, "ok"), "qwen")
+    call(env, dict(base, prompt_id="s########1", hook_event_name="UserPromptSubmit",
+                   prompt="next"), "qwen")
+    call(env, dict(base, prompt_id="s########1", hook_event_name="Stop",
+                   stop_hook_active=False), "qwen")
+
+    store = _qwen_store(env, repo)
+    turns = store.read(os.path.join("sessions", "s.json"))["turns"]
+    assert [(t["tool_calls"], t["resolved_proxy"]) for t in turns] == [(1, False), (0, False)]
+    assert store.read("envelope.json") is None
+
+
 # ---- packaging ------------------------------------------------------------------------------
 def test_the_qwen_manifest_declares_every_event_it_is_wired_for():
     """The extension is the manifest and nothing else: Qwen Code reads `qwen-extension.json` at

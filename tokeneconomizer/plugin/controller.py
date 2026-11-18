@@ -302,10 +302,20 @@ class LiveController:
             if outputs:
                 self.store.write("notices.json", seen)
         if self.cfg.loopguard != "off":
-            # A turn still open here never reached Stop -- the person interrupted it. Its
-            # outcome is unknown, so it is recorded but does not feed the envelope.
-            self._close_turn(s, stopped_normally=False)
-            s["turn"] = loopguard.TurnGuard(turn_key=self.host.turn_key(self.p)).to_dict()
+            key = self.host.turn_key(self.p)
+            data = s.get("turn")
+            # A re-fire inside the SAME prompt-turn, not a new prompt: Qwen Code sends this hook
+            # once per model request, so again after every tool result, with its `prompt_id`
+            # unchanged (verified live 2026-11-18). Closing the open turn on that re-fire records
+            # the turn that did the work as interrupted, so it never counts as ended-green, the
+            # repository's envelope never learns, and the guard can never act -- no envelope means
+            # neither the judge nor the rule fallback may redirect. Same key, same turn: it keeps
+            # accumulating. A host with no turn identity (an empty key) behaves as before.
+            if not (data and key and data.get("turn_key") == key):
+                # A turn still open here never reached Stop -- the person interrupted it. Its
+                # outcome is unknown, so it is recorded but does not feed the envelope.
+                self._close_turn(s, stopped_normally=False)
+                s["turn"] = loopguard.TurnGuard(turn_key=key).to_dict()
         self._save(s)
         return merge_outputs(*outputs) if outputs else {}
 
