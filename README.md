@@ -294,6 +294,7 @@ uninstalling, using Copilot with your own model key, and troubleshooting.
 | Hermes Agent (experimental) | 0.22.5 | not tested |
 | Antigravity CLI (experimental) | agy 1.5.1 and 1.5.2, Windows 11, macOS and Linux | not tested |
 | Factory Droid (experimental) | 0.233.0, macOS (below) | not tested |
+| Qwen Code (experimental) | 0.28.0, Windows only (below) | not tested; the unquoted hook command has not been verified on POSIX |
 
 The commands above were tested on the oldest and newest version in each range; newer versions
 have not been tested yet.

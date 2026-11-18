@@ -1318,7 +1318,8 @@ class Droid(Host):
 
 
 class QwenCode(Host):
-    """Qwen Code, through `plugin/.qwen-plugin/` and its `qwen/hooks.json`.
+    """Qwen Code, through `qwen-extension.json` at the extension root (installed by
+    `qwen extensions install --consent <path>/tokeneconomizer`).
 
     Qwen Code runs the same hook contract as Claude Code: JSON on stdin with `session_id`,
     `transcript_path`, `cwd`, `hook_event_name`, and `tool_name` / `tool_input` / `tool_response`
@@ -1334,9 +1335,20 @@ class QwenCode(Host):
         interrupted, ...}` with no exit code; a non-zero exit comes as `PostToolUseFailure`.
       * Tool names. The payload carries Qwen Code's own (`run_shell_command`, `read_file`, ...),
         so `tool_call` renames them into the mechanisms' vocabulary, as the session reader does.
-      * The session log. Qwen Code's transcript is read as-is, same as Claude Code's.
+      * The session log. Qwen Code's transcript lives under `~/.qwen/projects/<slug>/chats/`
+        as a JSONL file; `trace/qwen.py` converts it to the Claude envelope and extracts usage
+        from each turn's `usageMetadata` (`promptTokenCount` includes cache reads, so the fresh
+        input is the difference).
 
-    The plugin hook file passes `--host qwen` explicitly, so detection is straightforward.
+    The extension's `qwen-extension.json` declares six inline hooks (`SessionStart`,
+    `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`), each
+    running `te-hook --host qwen`. Hook commands must carry no double quotes: Qwen Code runs
+    a hook as `spawn(command, [], {shell: true})`, which on Windows reaches `cmd.exe` as one
+    argv element with its inner `"` escaped to `\"`; `cmd.exe` has no `\"` rule, so a quoted
+    launcher fails. The same string goes to `/bin/sh -c` unescaped on POSIX, so quotes work
+    there and an unquoted path breaks on a home directory containing a space. The unquoted
+    form is the only one that runs on both; a Windows install path with a space was already
+    broken. A test pins the rule.
     """
     name = "qwen"
     interrupt = "Press Esc to interrupt it."

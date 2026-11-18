@@ -685,7 +685,41 @@ Droid has no setting for none at all. With it off, `microskills=envfacts` still 
 model repeated it verbatim. The hook output is covered by tests; Droid appending it to the
 model's context has now been observed.
 
-## What to expect
+## Qwen Code
+
+Experimental. Full notes are in [`docs/PLUGIN.md`](../docs/PLUGIN.md#qwen-code-experimental).
+
+**1. Install.** Qwen Code installs a local extension by copying the directory, so the bundle
+must put a real copy of the Python package in `lib/` (in a checkout without symlinks,
+`lib/tokeneconomizer` is a 21-byte stub file holding a relative path, and an installed copy
+would carry the stub instead of the package). Build the bundle and install it with
+`--consent` (without it Qwen asks whether to trust the source and, with no console to answer
+in, exits having installed nothing):
+
+```sh
+python scripts/build_plugin.py --qwen
+qwen extensions install --consent "$PWD/dist/tokeneconomizer-qwen/tokeneconomizer"
+```
+
+Start a new Qwen Code session: hooks are snapshotted at startup.
+
+**2. Check it.** From a terminal in the repository:
+`~/.tokeneconomizer/bin/te --host qwen status`.
+
+**3. Hook commands carry no quotes.** Qwen Code runs a hook as `spawn(command, [], {shell: true})`,
+which on Windows reaches `cmd.exe` as one argv element with its inner `"` escaped to `\"`;
+`cmd.exe` has no `\"` rule, so a quoted launcher fails with «is not recognized». The same
+string goes to `/bin/sh -c` unescaped on POSIX, so quotes work there and an unquoted path
+breaks on a home directory containing a space. The unquoted form is the only one that runs
+on both; a Windows install path with a space was already broken.
+
+**4. What to expect.** The plugin learns session by session, exactly as on Claude Code:
+micro-skills inject repository facts at session start, tool pruning leaves out tools the
+repository's sessions never use, and the loop guard redirects a turn that shows signs of
+looping. Each mechanism's switch, evidence thresholds and model calls are the same;
+`qwen_paid_model` names the judge and proposer model when it differs from the session's
+model. `te doctor` lists Qwen Code among the installed agents when its CLI is on PATH.
+
 
 The plugin works session by session: what it learns from a repository's earlier sessions is
 applied to the ones that follow. Facts and the deny list take effect when a session starts; the

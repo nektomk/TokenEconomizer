@@ -1,7 +1,7 @@
 # TokenEconomizer
 
 A plugin for Claude Code, Codex, the Copilot CLI and Pi (experimentally opencode, Cursor, Grok Build,
-Hermes Agent, the Antigravity CLI and Factory Droid) that reads finished sessions and changes what
+Hermes Agent, the Antigravity CLI, Factory Droid and Qwen Code) that reads finished sessions and changes what
 later sessions in the same repository pay for: micro-skills, tool pruning, and a loop guard.
 See `README.md` for the overview and the method, `docs/PLUGIN.md` for the design and the verified
 agent behavior, and `docs/ARCHITECTURE.md` for how the package fits together.
