@@ -878,10 +878,18 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
     mechanisms key on their own vocabulary. The adapter renames it, as the session reader does;
     without that a qwen shell call is no shell call, the guard reads no test status from it, and
     the turns that feed the envelope are misjudged green.
-  * **The session log.** Its own JSONL under `~/.qwen/projects/<slug>/chats/`, converted to the
-    Claude envelope by `trace/qwen.py`; usage comes from its own `usageMetadata`, whose
-    `promptTokenCount` counts the cached reads, and there is no cache-write figure. There is no
-    history import yet (`keeps_history` is off).
+  * **The session log.** Its own JSONL under `<base>/projects/<slug>/chats/`, where `base` is
+    `$QWEN_RUNTIME_DIR`, else `$QWEN_HOME`, else `~/.qwen`, and `slug` is Qwen Code's own
+    `sanitizeCwd` — the project path lower-cased **on Windows only**, then every character that
+    is not a letter or a digit turned into `-` (not Claude Code's rule, which leaves the case
+    alone). `trace/qwen.py` converts it to the Claude envelope; usage comes from its own
+    `usageMetadata`, whose `promptTokenCount` counts the cached reads, and there is no
+    cache-write figure. The history import reads that directory, so a repository's sessions from
+    before the plugin are folded once and their ended-green turns seed the envelope. Its records
+    name no front end (there is no `entrypoint`) and no interruption, so a one-shot run is
+    imported like an interactive one and a turn the person broke off can enter the envelope;
+    only the `user` record carries a `promptId`, so a turn is cut at the prompt itself. See
+    `docs/QWEN.md`.
   * **The side call.** `qwen --safe-mode --max-tool-calls 0 --output-format json` with a neutral
     `--system-prompt`, every bundled tool named in `--exclude-tools`, and the prompt as a
     positional before that array — in a throwaway directory, on the person's default model

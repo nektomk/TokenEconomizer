@@ -17,7 +17,7 @@ session as an ordered list of `(tool_name, args, result_text, success)` calls th
 | `grok.py` | Grok Build sessions: `updates.jsonl` (ACP updates) written as a Claude transcript; prompts and usage from its session files |
 | `hermes.py` | Hermes Agent sessions: a copy of a session's `state.db` rows without the conversation's words, written as a Claude transcript; usage |
 | `pi.py` | Pi's session tree: the active branch, written as a Claude transcript; usage |
-| `qwen.py` | Qwen Code sessions: a JSONL file under `~/.qwen/projects/<slug>/chats/`, converted to a Claude transcript; prompts; usage from its own `usageMetadata`; the reply and usage of a headless `--output-format json` run |
+| `qwen.py` | Qwen Code sessions: a JSONL file under `<base>/projects/<slug>/chats/` (`$QWEN_RUNTIME_DIR`, else `$QWEN_HOME`, else `~/.qwen`; the slug is Qwen Code's `sanitizeCwd`), converted to a Claude transcript; the logs the history import reads; prompt-turns; prompts; usage from its own `usageMetadata`; the reply and usage of a headless `--output-format json` run |
 | `jsonl.py` | line and record readers shared by the above |
 
 A new agent needs a reader here and nothing else: once its log reads as `(name, args, result,

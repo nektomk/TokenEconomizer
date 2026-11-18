@@ -12,7 +12,7 @@ if the home directory path contains a space.
 | Mechanism | Qwen Code | Why |
 |---|---|---|
 | Micro-skills (repository facts at session start) | yes | `SessionStart` supports `hookSpecificOutput.additionalContext` |
-| History import (learn from earlier sessions) | **no** | `QwenCode.keeps_history` is off: the log is readable, but the adapter does not name the directory to scan, so `te history import` answers «no session history the plugin reads» |
+| History import (learn from earlier sessions) | yes | `~/.qwen/projects/<slug>/chats/<id>.jsonl` carries the calls, the usage and a `cwd` per record, and its field names (`sessionId`, `cwd`, an ISO `timestamp`) are Claude Code's |
 | Session cost / effective tokens | yes | the reader extracts usage from each turn's `usageMetadata`; `promptTokenCount` includes cache reads, so `effective_tokens = input - cache_read` |
 | Loop guard (redirect a failing loop) | yes | `PostToolUse` supports `additionalContext`. Verified live 2026-11-18: a turn repeating one failing test was redirected at the hard backstop with no model call at all. A paid judge is one rung of the cascade, not a prerequisite |
 | Tool pruning | yes | `tools.disabled` in `.qwen/settings.json` (project scope) removes any tool, MCP included; `permissions.deny` is weaker (MCP exempt) |
@@ -94,17 +94,49 @@ broken. A test pins the rule.
 
 ## The sessions you already ran
 
-**History import is not wired for this host.** `te --host qwen history import` answers
-«no session history the plugin reads» and changes nothing, because `QwenCode.keeps_history`
-is off. The log format itself is readable -- `~/.qwen/projects/<slug>/chats/<id>.jsonl`
-carries the tool calls and a `usageMetadata` block per assistant entry -- but the adapter
-does not yet name the directory to scan, and no session id filter is applied. Until it does,
-the plugin learns only from sessions that run after it is installed.
+A plugin installed today knows nothing about yesterday's sessions. Qwen Code's own log
+directory is read by the same history import the other hosts use:
 
-That has a consequence worth knowing: a repository's loop-guard envelope starts empty, and
-the guard does not act at all until `envelope_min_samples` turns (5 by default) have ended
-green. Neither the judge nor the rule fallback redirects a repository whose usual turns it
-has not learned -- a deliberate resolve-safety choice, not a fault.
+```sh
+~/.tokeneconomizer/bin/te --host qwen --cwd "$PWD" history import --dry-run
+```
+
+On Windows drive it through Python instead (see [Install](#install)). The import runs only into
+a repository with nothing folded yet, folds oldest first, and makes no model call. It skips a
+session with no prompt, one still being written (a transcript quiet for less than 600 s), one
+larger than 256 MB, one older than `history_days`, and one the plugin already recorded live.
+`history_import=on` lets the first session start in a repository do it by itself.
+
+Where the logs are: `$QWEN_RUNTIME_DIR`, else `$QWEN_HOME`, else `~/.qwen`, then
+`projects/<slug>/chats/<session id>.jsonl` -- the precedence of Qwen Code's own
+`Storage.getRuntimeBaseDir()` and `getGlobalQwenDir()`. The slug is its `sanitizeCwd`: the
+project path lower-cased **on Windows only**, then every character that is not a letter or a
+digit turned into `-`, so `C:\Users\me\widget` is filed under `c--users-me-widget` (the `:` and
+the separator each give a dash). That rule is not Claude Code's, which leaves the case alone,
+so it matters when a log's recorded `cwd` is gone and only its folder is left to match on.
+The scan is not recursive, as Qwen Code's own scanner is not, so its `chats/archive/` is left
+out and a `*.ledger.jsonl` beside a session is not read as one.
+
+Imported sessions are counted apart (`+N from earlier history` in `te status`), because they
+ran before the plugin: the totals in `sessions ... effective tokens` cover the sessions that
+end after it is installed. Their turns do seed the loop guard's envelope, so in a repository
+with nothing folded yet an import can be what lets the guard act at all -- without
+`envelope_min_samples` ended-green turns (5 by default) neither the judge nor the rule fallback
+redirects, which is a deliberate resolve-safety choice, not a fault.
+
+Three things this host's logs cannot tell the import, each checked against 0.28.0 logs on
+2026-11-18:
+
+* **No front end.** A record's `executionContext` names only the model, the auth type and the
+  approval mode, and there is no `entrypoint` field, so the filter that leaves out one-prompt
+  SDK runs on Claude Code never fires here: a one-shot `qwen "..."` run is imported like an
+  interactive session.
+* **No interruption marker.** Nothing in the log records that the person broke a turn off --
+  neither its `subtype` values nor its `provenance` values carry one -- so `turn_interrupted`
+  answers no and an interrupted turn can enter the envelope.
+* **Turn boundaries.** Only the `user` record the person typed carries a `promptId`; the
+  `assistant` and `tool_result` records of its turn carry none, so a turn is cut at the prompt
+  record itself, as the other readers cut it.
 
 A session is folded when it ends. A one-shot run (`qwen "..."`) does not fire `SessionEnd`,
 so its fold waits for the next session start in that repository, which picks up any session
@@ -162,9 +194,11 @@ tracks it and `QwenCode.keeps_history` is off, so nothing folds it.
 - **No catalog probe.** Qwen Code has no `--tools` or features-list command, so tool pruning
   can only propose a tool that has been called and then abandoned; it never proposes a tool
   that was loaded but never touched. The saving is therefore conservative.
-- **`qwen_safe_session_id` unused.** The reader exports a function to extract a safe session
-  id from the log, but `QwenCode.keeps_history = False`, so the history import is not wired
-  for this host. Decide later: wire it or drop the function.
+- **History import reads a log that names no front end and no interruption.** See
+  [The sessions you already ran](#the-sessions-you-already-ran): a one-shot `qwen "..."` run is
+  imported like an interactive session, and a turn the person broke off can enter the envelope.
+  Both are gaps in what Qwen Code 0.28.0 writes, not in the reader -- there is no `entrypoint`
+  field and no interruption marker to read.
 - **Pricing is a snapshot, and one ratio differs from every other vendor's.** 14 Qwen models
   are priced in `tokeneconomizer/pricing.py` from the provider's `/v1/pricing`, cross-checked
   against the `ratePerMillion` that `/v1/generations` actually bills. A billed id missing from
