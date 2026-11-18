@@ -1354,7 +1354,10 @@ class QwenCode(Host):
     broken. A test pins the rule.
     """
     name = "qwen"
-    interrupt = "Press Esc to interrupt it."
+    # A hook cannot tell the terminal UI from a one-shot run (see the note where a `headless`
+    # override would be), so both wordings name both ways out instead of guessing one and being
+    # wrong half the time -- Droid's precedent for an agent whose key the plugin cannot know.
+    interrupt = end_run = "Interrupt it to stop it: Esc in the terminal UI, Ctrl+C in a run."
     relays_notices = True
     prompt_context = True
     keeps_start_context = True
@@ -1380,10 +1383,18 @@ class QwenCode(Host):
         # Qwen Code exports its session id to the shell environment.
         return str(env.get("TE_SESSION_ID") or env.get("QWEN_CODE_SESSION_ID") or "")
 
-    def headless(self, env, transcript=None):
-        # Qwen Code marks an interactive terminal session with QWEN_CODE (verified against
-        # 0.27.4), and a one-shot headless run (`qwen -p "..."`) leaves it unset.
-        return not env.get("QWEN_CODE")
+    # No `headless()` override here, deliberately: Qwen Code gives a hook no way to tell a
+    # one-shot run from the terminal UI, and the `QWEN_CODE` variable this used to read does not
+    # mean that. In 0.28.0 the bundle sets `QWEN_CODE:"1"` only in the environment of children it
+    # spawns -- the shell tool, its pty, `monitor`, arena agents, autofix-pr -- and never on its
+    # own process (six occurrences, all of them child environments; no `process.env.QWEN_CODE`
+    # assignment anywhere, and the npm shim does not set it either). A hook's env is the
+    # sanitized parent env plus the project dirs and `getShellContextEnvVars()`, so a top-level
+    # session hands its hooks no such variable whether it is interactive or one-shot, and a
+    # session launched from inside another one's shell hands them one either way. Reading it
+    # therefore answered "headless" for the terminal UI, where Esc is the key, and "interactive"
+    # for a one-shot run nested in a session. The base's False stands, `stop_hint` says the same
+    # thing either way, and `mode=interactive|headless` still pins it for anyone who wants to.
 
     # -- the finished session ---------------------------------------------------------------
     # Qwen Code's transcript is its own JSONL: records carry `type`

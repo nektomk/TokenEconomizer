@@ -173,11 +173,25 @@ def test_host_reads_a_qwen_session(tmp_path):
     assert host.mechanism_trace(str(tmp_path / "none.jsonl"), str(workdir)) is None
 
 
-def test_host_headless_and_session_id_use_the_real_markers(monkeypatch):
+def test_the_host_does_not_guess_a_one_shot_run_from_qwen_code(monkeypatch):
+    """`QWEN_CODE` is not a mode marker. In 0.28.0 Qwen Code sets it only in the environment of
+    children it spawns -- the shell tool, its pty, `monitor`, arena agents, autofix-pr -- and
+    never on its own process, while a hook inherits that process env. So a hook sees the variable
+    exactly when qwen was launched from inside another qwen's shell, whatever mode either is in:
+    reading it answered "headless" for the terminal UI, where Esc is the key, and "interactive"
+    for a one-shot run nested in a session. The host no longer guesses, and the still-stuck
+    notice names both ways out."""
     host = hosts.QwenCode()
     monkeypatch.delenv("QWEN_CODE", raising=False)
-    assert host.headless({}, None) is True              # no marker: not an interactive session
+    assert host.headless({}, None) is False
     assert host.headless({"QWEN_CODE": "1"}, None) is False
+    assert host.stop_hint(True) == host.stop_hint(False)
+    for key in ("Esc", "Ctrl+C"):
+        assert key in host.stop_hint(False)
+
+
+def test_host_session_id_uses_the_real_markers():
+    host = hosts.QwenCode()
     assert host.env_session_id({"QWEN_CODE_SESSION_ID": "abc"}) == "abc"
     assert host.env_session_id({"TE_SESSION_ID": "te-1"}) == "te-1"
     assert host.env_session_id({}) == ""
