@@ -1335,10 +1335,13 @@ class QwenCode(Host):
         interrupted, ...}` with no exit code; a non-zero exit comes as `PostToolUseFailure`.
       * Tool names. The payload carries Qwen Code's own (`run_shell_command`, `read_file`, ...),
         so `tool_call` renames them into the mechanisms' vocabulary, as the session reader does.
-      * The session log. Qwen Code's transcript lives under `~/.qwen/projects/<slug>/chats/`
-        as a JSONL file; `trace/qwen.py` converts it to the Claude envelope and extracts usage
-        from each turn's `usageMetadata` (`promptTokenCount` includes cache reads, so the fresh
-        input is the difference).
+      * The session log. Qwen Code's transcript lives under `<base>/projects/<slug>/chats/` as a
+        JSONL file, where `base` is `$QWEN_RUNTIME_DIR`, else `$QWEN_HOME`, else `~/.qwen`, and
+        `slug` is Qwen Code's own `sanitizeCwd` -- the project path lower-cased on Windows only,
+        then every character that is not a letter or a digit turned into `-`. `trace/qwen.py`
+        converts it to the Claude envelope and extracts usage from each turn's `usageMetadata`
+        (`promptTokenCount` includes cache reads, so the fresh input is the difference). The
+        history import reads that same directory, so `keeps_history` is on.
 
     The extension's `qwen-extension.json` declares six inline hooks (`SessionStart`,
     `UserPromptSubmit`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`), each
@@ -1401,8 +1404,48 @@ class QwenCode(Host):
     def prompt_count(self, transcript_path):
         return trace.qwen_prompt_count(transcript_path)
 
-    keeps_history = False   # qwen logs sit under ~/.qwen/projects/<slug>/chats/, not Claude's
-                            # layout; history import is not wired up for this host yet
+    # -- the history import --------------------------------------------------------------
+    # The log's own field names are Claude Code's (`sessionId`, `cwd`, an ISO `timestamp`), so
+    # `log_head` is inherited unchanged; there is no `entrypoint`, which `history._headless`
+    # keys on, so a one-shot run is imported like an interactive one -- the log carries no front
+    # end (`executionContext` names only the model, the auth type and the approval mode).
+    keeps_history = True
+
+    def history(self, env, extra_dirs=()):
+        """Every session log under `$QWEN_RUNTIME_DIR` (else `$QWEN_HOME`, else `~/.qwen`) in
+        `projects/<folder>/chats/`, and the `extra_dirs` (each a `projects` folder, or a config
+        folder holding one); a session filed in two of them is listed once, from the first."""
+        dirs = [trace.qwen_projects_dir(env)]
+        for d in extra_dirs or ():
+            d = os.path.expanduser(str(d))
+            dirs.append(os.path.join(d, "projects") if os.path.isdir(os.path.join(d, "projects"))
+                        else d)
+        out, seen, seen_dirs = [], set(), set()
+        for d in dirs:
+            real = os.path.realpath(d)
+            if real in seen_dirs:
+                continue
+            seen_dirs.add(real)
+            for folder, path, mtime, size in trace.qwen_history_logs(d):
+                sid = os.path.basename(path)[:-len(".jsonl")]
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                out.append({"session_id": sid, "folder": folder, "path": path, "mtime": mtime,
+                            "size": size})
+        return out
+
+    def safe_session_id(self, sid):
+        return trace.qwen_safe_session_id(sid)
+
+    def prompt_turns(self, path):
+        return trace.qwen_prompt_turns(path)
+
+    def folder_matches(self, root, folder):
+        # Qwen Code's `sanitizeCwd`: lower-cased on Windows only, then every character that is not
+        # a letter or a digit becomes `-`. Only asked when the recorded cwd is gone.
+        return folder in {trace.qwen_project_folder(root),
+                          trace.qwen_project_folder(os.path.realpath(root))}
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "droid": Droid,
          "opencode": OpenCode, "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,

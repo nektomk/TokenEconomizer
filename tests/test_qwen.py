@@ -668,3 +668,154 @@ def test_build_plugin_chooses_one_layout(tmp_path):
     assert build_plugin.main(["--qwen", "--out", str(tmp_path / "q")]) == 0
     assert os.path.isdir(os.path.join(str(tmp_path / "q"), "tokeneconomizer", "lib",
                                       "tokeneconomizer"))
+
+
+# ---- the history import ---------------------------------------------------------------------
+def test_the_projects_dir_follows_qwens_runtime_base(tmp_path):
+    """`QWEN_RUNTIME_DIR` wins, then `QWEN_HOME`, then the home directory's `.qwen` -- the
+    precedence of Qwen Code's own `Storage.getRuntimeBaseDir()` and `getGlobalQwenDir()`."""
+    both = {"QWEN_RUNTIME_DIR": str(tmp_path / "rt"), "QWEN_HOME": str(tmp_path / "home")}
+    assert trace.qwen_projects_dir(both) == os.path.join(str(tmp_path / "rt"), "projects")
+    assert trace.qwen_projects_dir({"QWEN_HOME": str(tmp_path / "home")}) == \
+        os.path.join(str(tmp_path / "home"), "projects")
+    home_key = "USERPROFILE" if os.name == "nt" else "HOME"
+    assert trace.qwen_projects_dir({home_key: str(tmp_path)}) == \
+        os.path.join(str(tmp_path), ".qwen", "projects")
+
+
+def test_the_project_folder_is_qwens_sanitize_cwd():
+    """Qwen Code's `sanitizeCwd`: lower-cased on Windows only, then every character that is not a
+    letter or a digit becomes `-` -- so the `:` and the separator of a Windows path give the
+    double dash its real slugs carry (`c--users-max-desktop-...`). Claude Code's rule, which this
+    is not, leaves the case alone."""
+    assert trace.qwen_project_folder("/home/u/widget") == "-home-u-widget"
+    assert trace.qwen_project_folder(r"C:\Users\Max\Widget") == \
+        ("c--users-max-widget" if os.name == "nt" else "C--Users-Max-Widget")
+
+
+def test_history_logs_read_a_projects_chats_directory(tmp_path):
+    """Only `<folder>/chats/*.jsonl`: not the `*.ledger.jsonl` a session may have beside it, not
+    Qwen Code's `chats/archive/` (its own scanner is not recursive either), and not a project
+    folder that has no `chats/` at all."""
+    projects = tmp_path / "projects"
+    chats = projects / "c--r" / "chats"
+    chats.mkdir(parents=True)
+    (chats / "aaaa.jsonl").write_text("{}\n", encoding="utf-8")
+    (chats / "aaaa.ledger.jsonl").write_text("{}\n", encoding="utf-8")
+    (chats / "notes.txt").write_text("x", encoding="utf-8")
+    (chats / "archive").mkdir()
+    (chats / "archive" / "bbbb.jsonl").write_text("{}\n", encoding="utf-8")
+    (projects / "c--other").mkdir()
+    rows = trace.qwen_history_logs(str(projects))
+    assert [(r[0], os.path.basename(r[1])) for r in rows] == [("c--r", "aaaa.jsonl")]
+    assert rows[0][2] > 0 and rows[0][3] > 0        # its mtime and size are real
+
+
+def test_prompt_turns_cut_at_the_prompt_and_keep_the_answer(tmp_path):
+    """A turn starts at the prompt record, because only the `user` record the person typed
+    carries a `promptId` -- the assistant and tool_result records of its turn carry none. The
+    assistant's own text survives the conversion and its reasoning (`thought`) does not, which is
+    what tells an answered turn from one the log cut off mid-flight. A task notification Qwen
+    Code adds itself is no prompt and opens no turn."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "first", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3-x", thought="let me look", cwd="/w/repo",
+                   calls=[("c1", "run_shell_command", {"command": "pytest -q"})]),
+        _result(sid, "c1", "run_shell_command", output="1 failed in 0.1s", status="error"),
+        _assistant(sid, "a2", "qwen/qwen3-x", text="it fails", cwd="/w/repo"),
+        _notify(sid, "n1"),
+        _user(sid, "second", "u2", cwd="/w/repo", prompt_id=f"{sid}########1"),
+        _assistant(sid, "a3", "qwen/qwen3-x", text="done", cwd="/w/repo"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert len(turns) == 2
+    first = [json.loads(ln) for ln in turns[0]]
+    assert [r["type"] for r in first] == ["user", "assistant", "user", "assistant"]
+    assert first[0]["message"]["content"] == "first"
+    assert "let me look" not in "".join(turns[0])       # reasoning is not an answer
+    assert first[3]["message"]["content"] == [{"type": "text", "text": "it fails"}]
+    assert [json.loads(ln)["message"]["content"] for ln in turns[1]] == \
+        ["second", [{"type": "text", "text": "done"}]]
+
+
+def test_the_host_reads_an_earlier_turns_calls_and_whether_it_was_answered(tmp_path):
+    """What the envelope replay asks of the adapter: the turn's calls in the mechanisms'
+    vocabulary with their outcome, and whether the turn was answered. Both come from the shared
+    reader, because `prompt_turns` hands it Claude-shaped lines."""
+    host = hosts.QwenCode()
+    turns = list(host.prompt_turns(_session(tmp_path)))
+    assert len(turns) == 1
+    assert [(n, a, ok) for n, a, _t, ok, _c in host.turn_calls(turns[0])] == [
+        ("Bash", {"command": "pytest -q"}, False),
+        ("Read", {"file_path": "/w/repo/x.py"}, True)]
+    # that session ends on a call with no answer after it, as one killed mid-turn does
+    assert host.turn_answered(turns[0]) is False
+    assert host.turn_interrupted(turns[0]) is False
+
+
+def test_history_lists_the_sessions_of_a_qwen_projects_dir(tmp_path):
+    """`history` walks the projects directory the environment names and takes a session's id from
+    its file name, as the other hosts' do."""
+    home = tmp_path / "qwenhome"
+    chats = home / "projects" / "c--w-repo" / "chats"
+    chats.mkdir(parents=True)
+    (chats / "aaaa-bbbb.jsonl").write_text("{}\n", encoding="utf-8")
+    host = hosts.QwenCode()
+    assert host.keeps_history is True
+    rows = host.history({"QWEN_HOME": str(home)})
+    assert [(r["session_id"], r["folder"]) for r in rows] == [("aaaa-bbbb", "c--w-repo")]
+
+
+def test_folder_matches_uses_the_qwen_slug_rule(tmp_path):
+    """Asked only where a log's recorded cwd is gone: the folder must be this repository's root
+    under Qwen Code's slug rule, and nothing else."""
+    host = hosts.QwenCode()
+    root = str(tmp_path / "Widget")
+    os.makedirs(root)
+    assert host.folder_matches(root, trace.qwen_project_folder(root)) is True
+    assert host.folder_matches(root, "c--somewhere-else") is False
+
+
+def test_history_import_folds_an_earlier_qwen_session(env, repo, tmp_path, monkeypatch):
+    """The import end to end: a session logged before the plugin was installed is read from Qwen
+    Code's own projects directory, folded once and marked `imported`, priced by its own model,
+    and its ended-green turn seeds the envelope the live guard needs before it may act."""
+    from tokeneconomizer.plugin import cli
+    home = tmp_path / "qwenhome"
+    chats = home / "projects" / trace.qwen_project_folder(repo) / "chats"
+    chats.mkdir(parents=True)
+    sid = "11111111-2222-3333-4444-555555555555"
+    path = _write(chats, sid, [
+        _user(sid, "fix the build", "u1", cwd=repo, prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3.8-max", cwd=repo, usage=USAGE, text="running it",
+                   calls=[("c1", "run_shell_command", {"command": "pytest -q"})]),
+        _result(sid, "c1", "run_shell_command", output="1 passed in 0.10s"),
+        _assistant(sid, "a2", "qwen/qwen3.8-max", cwd=repo, usage=USAGE, text="it is green"),
+    ])
+    quiet = time.time() - 3600          # over, but well inside `history_days`
+    os.utime(path, (quiet, quiet))
+    for key, value in dict(env, QWEN_HOME=str(home)).items():
+        monkeypatch.setenv(key, value)
+
+    assert cli.main(["--host", "qwen", "--cwd", repo, "history", "import"]) == 0
+
+    store = _qwen_store(env, repo)
+    with open(store.path("ledger.jsonl"), encoding="utf-8") as fh:
+        rows = [json.loads(ln) for ln in fh if ln.strip()]
+    assert [r["session_id"] for r in rows] == [sid]
+    assert rows[0]["imported"] is True
+    assert rows[0]["model"] == "qwen/qwen3.8-max" and rows[0]["priced_by"] == "model"
+    assert rows[0]["effective_tokens"] > 0
+    assert (store.read("folded.json") or {}).get(sid, {}).get("imported") is True
+    assert store.read("envelope.json")["resolved_turns"] == [1]
+
+
+def test_the_import_line_names_qwen_and_not_claude():
+    """`te status` says whose history it read. `HOST_LABEL` falls back to «Claude Code» for a host
+    it does not name, so without this host's entry a qwen import reported Claude Code's logs --
+    caught live 2026-11-18, where the import itself worked and only the line lied."""
+    from tokeneconomizer.plugin import history
+    assert history.HOST_LABEL["qwen"] == "Qwen Code"
+    assert history.describe({"state": "done", "imported": 1}, "qwen") == \
+        "read 1 earlier session(s) from Qwen Code's history"

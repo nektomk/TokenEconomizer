@@ -248,3 +248,129 @@ def qwen_json_reply(stdout):
                      "output_tokens": int(u.get("output_tokens") or 0),
                      "model": model}
     return text.strip(), usage
+
+
+# ---- the session logs Qwen Code keeps -------------------------------------------------------
+# Paths follow Qwen Code's own `Storage` (0.28.0): `getRuntimeBaseDir()` takes `QWEN_RUNTIME_DIR`,
+# else `getGlobalQwenDir()`, which takes `QWEN_HOME`, else `~/.qwen`; a project's sessions live in
+# `<base>/projects/<sanitizeCwd(root)>/chats/<session id>.jsonl`.
+def qwen_projects_dir(env=None):
+    """Where Qwen Code keeps its session logs: `$QWEN_RUNTIME_DIR/projects`, else
+    `$QWEN_HOME/projects`, else `~/.qwen/projects`."""
+    env = os.environ if env is None else env
+    base = env.get("QWEN_RUNTIME_DIR") or env.get("QWEN_HOME")
+    if not base:
+        home = env.get("HOME") if os.name != "nt" else env.get("USERPROFILE")
+        base = os.path.join(home or os.path.expanduser("~"), ".qwen")
+    return os.path.join(os.path.expanduser(str(base)), "projects")
+
+
+def qwen_project_folder(path):
+    """The folder name Qwen Code files a directory's sessions under -- its `sanitizeCwd`: the path
+    lower-cased on Windows only, then every character that is not a letter or a digit becomes `-`
+    (`C:\\Users\\me\\widget` -> `c--users-me-widget`, the `:` and the `\\` each giving a dash)."""
+    text = str(path or "")
+    if os.name == "nt":
+        text = text.lower()
+    return re.sub(r"[^A-Za-z0-9]", "-", text)
+
+
+def qwen_history_logs(projects_dir):
+    """[(folder, path, mtime, size)] for every session log under `projects_dir`:
+    `<folder>/chats/<session id>.jsonl`. Not recursive, as Qwen Code's own scanner is not, so the
+    `chats/archive/` subdirectory it keeps is left out; the `*.ledger.jsonl` a session may have
+    beside it is not a session log either."""
+    out = []
+    try:
+        folders = sorted(os.listdir(projects_dir))
+    except OSError:
+        return out
+    for folder in folders:
+        d = os.path.join(projects_dir, folder, "chats")
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for name in names:
+            if not name.endswith(".jsonl") or name.endswith(".ledger.jsonl"):
+                continue
+            path = os.path.join(d, name)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            if not os.path.isfile(path):
+                continue
+            out.append((folder, path, st.st_mtime, st.st_size))
+    return out
+
+
+def _qwen_claude_line(ev):
+    """One Qwen Code record as a Claude Code transcript line, or None when it is no part of the
+    conversation -- its `system` bookkeeping (`ui_telemetry`, the snapshots, a slash command).
+
+    Unlike `qwen_session_to_claude`, this keeps the assistant's own text (a `text` part without
+    `thought`, or one carrying `responsesMessage`), because that text is what tells an answered
+    turn from one the log cut off mid-flight -- which is what the envelope replay asks."""
+    parts = (ev.get("message") or {}).get("parts")
+    parts = parts if isinstance(parts, list) else []
+    cwd = ev.get("cwd") if isinstance(ev.get("cwd"), str) else None
+
+    def out(record):
+        if cwd:
+            record["cwd"] = cwd
+        return json.dumps(record)
+
+    kind = ev.get("type")
+    if kind == "user":
+        if not _is_prompt(ev):
+            return None
+        text = "\n".join(p.get("text", "") for p in parts
+                         if isinstance(p, dict) and p.get("text") and not p.get("thought"))
+        return out({"type": "user", "message": {"role": "user", "content": text}}) \
+            if text.strip() else None
+    if kind == "assistant":
+        content = []
+        for p in parts:
+            if not isinstance(p, dict):
+                continue
+            call = p.get("functionCall")
+            if isinstance(call, dict) and call.get("id"):
+                name, args = qwen_tool(call.get("name"), call.get("args") or {})
+                content.append({"type": "tool_use", "id": call["id"], "name": name,
+                                "input": args})
+            elif p.get("text") and not p.get("thought"):
+                content.append({"type": "text", "text": p["text"]})
+        return out({"type": "assistant", "message": {"role": "assistant", "content": content}}) \
+            if content else None
+    if kind == "tool_result":
+        r = _parts_result(ev)
+        if not r or not r[0]:
+            return None
+        call_id, _name, text, failed = r
+        return out({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": call_id, "content": text,
+             "is_error": failed}]}})
+    return None
+
+
+def qwen_prompt_turns(path):
+    """Each prompt-turn of a Qwen Code session, as Claude Code log lines from its prompt to the
+    next, one turn at a time. Used to seed the loop guard's envelope from imported sessions.
+
+    The prompt record itself is the boundary: only the `user` record the person typed carries a
+    `promptId`, while the `assistant` and `tool_result` records of its turn carry none (verified
+    2026-11-18 against 0.28.0 logs), so there is no key to group them by."""
+    current = None
+    for ev in _records(path):
+        line = _qwen_claude_line(ev)
+        if line is None:
+            continue
+        if _is_prompt(ev):
+            if current is not None:
+                yield current
+            current = [line]
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        yield current
