@@ -118,22 +118,26 @@ MODEL_WEIGHTS = {
     "gemini-4-carbon":         dict(input=1.0, cache_read=0.05,   cache_write=0.0,   output=5.0),
     "gemini-4-hydrogen":       dict(input=1.0, cache_read=0.05,   cache_write=0.0,   output=5.0),
     # --- Qwen models (PlusVibeApi, fetched 2026-11-18, prices in RUB/1M → ratios) ------
-    # Source: https://plusvibeapi.ru/v1/pricing (requires Authorization header).
-    # Variants: default variant used; cache_write is ~1x input for most models.
-    # Embedding models have no cache pricing — set to 0.1/1.0 as placeholders.
-    "qwen3-embedding-0.6b":    dict(input=1.0, cache_read=0.1,    cache_write=1.0,   output=5.0),
-    "qwen3-embedding-4b":      dict(input=1.0, cache_read=0.1,    cache_write=1.0,   output=5.0),
-    "qwen3-embedding-8b":      dict(input=1.0, cache_read=0.1,    cache_write=1.0,   output=5.0),
-    "qwen3-embedding-8b-rus1": dict(input=1.0, cache_read=0.1,    cache_write=1.0,   output=5.0),
+    # Source: https://plusvibeapi.ru/v1/pricing (requires Authorization header). Each ratio is
+    # the default variant's price / its own input price, cross-checked against the
+    # `cost_detail.lines.ratePerMillion` of /v1/generations -- what the provider really bills.
+    # qwen3.8-max bills a cache hit at 0.267x input (`cacheShare` 4/15), NOT the 0.1x the other
+    # vendors use, and cache reads are the bulk of an agent turn's tokens here, so that one
+    # ratio moves the whole figure. The embedding models are not cacheable and bill no output,
+    # so those ratios are 0 rather than a placeholder borrowed from a chat model.
+    "qwen3-embedding-0.6b":    dict(input=1.0, cache_read=0.0,    cache_write=0.0,   output=0.0),
+    "qwen3-embedding-4b":      dict(input=1.0, cache_read=0.0,    cache_write=0.0,   output=0.0),
+    "qwen3-embedding-8b":      dict(input=1.0, cache_read=0.0,    cache_write=0.0,   output=0.0),
+    "qwen3-embedding-8b-rus1": dict(input=1.0, cache_read=0.0,    cache_write=0.0,   output=0.0),
     "qwen3.6-35b":             dict(input=1.0, cache_read=0.262,  cache_write=0.961, output=5.711),
-    "qwen3.7-plus":            dict(input=1.0, cache_read=0.993,  cache_write=0.993, output=4.0),
-    "qwen3.8-2.4t-a95b":       dict(input=1.0, cache_read=0.099,  cache_write=1.19,  output=3.0),
-    "qwen3.8-27b":             dict(input=1.0, cache_read=0.255,  cache_write=0.994, output=5.0),
-    "qwen3.8-27b-uncensored":  dict(input=1.0, cache_read=1.0,    cache_write=1.0,   output=3.0),
-    "qwen3.8-flash":           dict(input=1.0, cache_read=0.1,    cache_write=1.0,   output=2.94),
-    "qwen3.8-flash-next":      dict(input=1.0, cache_read=0.116,  cache_write=1.006, output=3.16),
-    "qwen3.8-max":             dict(input=1.0, cache_read=0.1,    cache_write=0.95,  output=3.0),
-    "qwen3.8-omni-flash":      dict(input=1.0, cache_read=0.097,  cache_write=0.97,  output=3.14),
+    "qwen3.7-plus":            dict(input=1.0, cache_read=0.993,  cache_write=0.993, output=3.999),
+    "qwen3.8-2.4t-a95b":       dict(input=1.0, cache_read=0.099,  cache_write=1.19,  output=2.996),
+    "qwen3.8-27b":             dict(input=1.0, cache_read=0.255,  cache_write=0.994, output=4.999),
+    "qwen3.8-27b-uncensored":  dict(input=1.0, cache_read=0.998,  cache_write=0.998, output=3.0),
+    "qwen3.8-flash":           dict(input=1.0, cache_read=0.1,    cache_write=0.0,   output=2.938),
+    "qwen3.8-flash-next":      dict(input=1.0, cache_read=0.116,  cache_write=1.006, output=3.158),
+    "qwen3.8-max":             dict(input=1.0, cache_read=0.267,  cache_write=1.102, output=3.198),
+    "qwen3.8-omni-flash":      dict(input=1.0, cache_read=0.097,  cache_write=0.974, output=3.142),
     "qwen4-max":               dict(input=1.0, cache_read=0.099,  cache_write=1.0,   output=3.0),
 }
 
