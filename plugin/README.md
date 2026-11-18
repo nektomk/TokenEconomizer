@@ -957,7 +957,7 @@ first session there ends.
 | `pi_extensions` | `""` | Pi only: extension files (comma-separated paths) the plugin's own calls load, for a model whose provider an extension registers |
 | `pi_cli` | `""` | Pi only: the `pi` the plugin's own calls run; empty: the first on PATH |
 | `shadow` | `false` | decide and log everything, act on nothing |
-| `mode` | `auto` | `interactive` or `headless` to override what the plugin detects |
+| `mode` | `auto` | `interactive` or `headless` to override what the plugin detects. Qwen Code only: no effect — its mode cannot be detected and its notice names both ways out either way |
 
 **Where settings live, and when they apply.** For one session, an environment variable wins:
 `TE_` plus the setting's name in capitals (`TE_MICROSKILLS`, `TE_TOOLPRUNE_EVIDENCE`,

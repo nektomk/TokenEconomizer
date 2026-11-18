@@ -473,7 +473,7 @@ redirects, you see one line that ends with how to stop it:
 > calls). Press Esc to interrupt it.
 
 Where that line appears, and how to stop the turn, in the terminal UI and in a headless run
-(`claude -p`, `codex exec`, `copilot -p`, `pi -p`, `opencode run`, `hermes -z`):
+(`claude -p`, `codex exec`, `copilot -p`, `pi -p`, `opencode run`, `hermes -z`, `qwen "…"`):
 
 | Agent | Interactive: where it shows | How to stop | Headless: where it shows | How to stop |
 |---|---|---|---|---|
@@ -484,6 +484,7 @@ Where that line appears, and how to stop the turn, in the terminal UI and in a h
 | opencode | as a notification | Esc | on stderr | Ctrl+C |
 | Hermes Agent | in the model's reply | Ctrl+C | in the final reply | Ctrl+C |
 | Factory Droid | in the model's reply | Interrupt the agent | in the final reply | Ctrl+C |
+| Qwen Code | in the model's reply | Esc or Ctrl+C | in the model's reply | Esc or Ctrl+C |
 
 - **Claude Code** shows a plugin's own lines only in its detailed transcript (Ctrl+O), so the
   plugin asks Claude to repeat this one in its reply; the model may word it differently or leave
@@ -494,6 +495,10 @@ Where that line appears, and how to stop the turn, in the terminal UI and in a h
 - **opencode** 2.x prints the line to the opencode server's error output, not in its terminal UI.
 - **Hermes Agent**: the plugin asks the model to repeat the line, since no hook was found to reach
   the person's view; a model may word it differently or leave it out.
+- **Qwen Code**: both columns carry the same wording because a hook cannot tell the two apart.
+  `QWEN_CODE` is set only in the environment of children Qwen Code spawns, never on its own
+  process, and neither its session log nor its hook payloads name a mode; `mode` therefore
+  changes nothing visible on this host. See `docs/QWEN.md`.
 
 In a headless run nobody may be watching, so a flagged turn runs until it ends or reaches the
 agent's own limits; afterwards, `te status` counts the redirects and "still stuck" notices.

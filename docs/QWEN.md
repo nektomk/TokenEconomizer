@@ -207,12 +207,22 @@ tracks it and `QwenCode.keeps_history` is off, so nothing folds it.
   (`cacheShare` 4/15), not the 0.1x the other vendors use -- and cache reads are most of an
   agent turn's tokens, so that one ratio moves every total. Re-check the table when the
   provider changes its prices.
-- **`headless()` reads an inherited variable.** `QwenCode.headless()` answers from `QWEN_CODE`
-  in the hook's environment, and hooks inherit the parent's environment. A one-shot run
-  launched from inside an interactive Qwen Code session is therefore seen as interactive, and
-  the still-stuck notice says «Press Esc to interrupt it.» where there is no UI to press it in.
-  Cosmetic, but the same flag gates side calls, so unset `QWEN_CODE` when a headless run must
-  be measured as one.
+- **A one-shot run cannot be told from the terminal UI.** `QWEN_CODE` is not a mode marker: in
+  0.28.0 Qwen Code sets it only in the environment of children it spawns (the shell tool, its
+  pty, `monitor`, arena agents, autofix-pr) and never on its own process, and a hook inherits
+  that process env plus the project directories and `getShellContextEnvVars()`. So a top-level
+  session hands its hooks no such variable whether it is interactive or one-shot, and a session
+  launched from inside another one's shell hands them one either way. There is no other signal
+  either -- the log's `executionContext` names only the model, the auth type and the approval
+  mode, the `attribution_snapshot` says `surface: "cli"` in both, and the `Stop` payload carries
+  only `stop_hook_active`, `last_assistant_message` and context usage. The adapter therefore does
+  not guess: `headless()` is the base's False and the still-stuck notice names both ways out
+  («Interrupt it to stop it: Esc in the terminal UI, Ctrl+C in a run.»). A consequence worth
+  knowing: `mode=interactive|headless` changes nothing visible on this host, because both
+  wordings are now the same sentence.
+  Reading `QWEN_CODE` used to answer «headless» for the terminal UI, where Esc is the key, and
+  «interactive» for a one-shot run nested in a session -- wrong in both directions, and found
+  only by reading the bundle, because the notice had looked plausible.
 - **`UserPromptSubmit` fires more than once inside a prompt-turn** -- observed again after a
   tool result, with `prompt_id` unchanged. The controller keeps such a re-fire on the open turn
   instead of closing it as interrupted; without that, every turn that did any work was recorded

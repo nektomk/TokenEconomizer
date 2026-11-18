@@ -431,7 +431,10 @@ thresholds), in its terminal UI and headless.
   call without Ctrl+O.
 * Telling headless from interactive: Claude Code's environment says so, and Pi's extension; Codex
   only in its rollout's first record (`source: "exec"`); Copilot only in its own command line
-  (`copilot -p`), its payloads, environment and session log being the same in both modes.
+  (`copilot -p`), its payloads, environment and session log being the same in both modes. Qwen
+  Code cannot be told at all — `QWEN_CODE` is set only on the children it spawns, never on its
+  own process, and neither its log nor its payloads carry a mode — so its notice names both ways
+  out and `mode` changes nothing there.
 * Codex 0.163.0 edits with `apply_patch <<'PATCH'` and runs the tests in the same command; the
   guard counts those edits (`loopguard.shell_edits`).
 
