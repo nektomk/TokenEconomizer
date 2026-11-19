@@ -124,16 +124,24 @@ with nothing folded yet an import can be what lets the guard act at all -- witho
 `envelope_min_samples` ended-green turns (5 by default) neither the judge nor the rule fallback
 redirects, which is a deliberate resolve-safety choice, not a fault.
 
-Three things this host's logs cannot tell the import, each checked against 0.28.0 logs on
-2026-11-18:
+What the import can and cannot learn from this host's logs, each checked against the real logs on
+this machine (0.28.0 on 2026-11-18, and all 69 session files on 2026-11-19):
 
-* **No front end.** A record's `executionContext` names only the model, the auth type and the
-  approval mode, and there is no `entrypoint` field, so the filter that leaves out one-prompt
-  SDK runs on Claude Code never fires here: a one-shot `qwen "..."` run is imported like an
-  interactive session.
-* **No interruption marker.** Nothing in the log records that the person broke a turn off --
-  neither its `subtype` values nor its `provenance` values carry one -- so `turn_interrupted`
-  answers no and an interrupted turn can enter the envelope.
+* **No front-end marker, so one-shot is a guess.** A record's `executionContext` names only the
+  model, the auth type and the approval mode, and there is no `entrypoint` field, so the filter
+  that leaves out one-prompt SDK runs on Claude Code never fires here. A one-shot `qwen "..."`
+  run is instead known by carrying exactly one prompt record -- a heuristic that cannot tell it
+  from an interactive session whose person typed one prompt and left, so it is gated behind
+  `history_import_skip_one_shot` (on by default) rather than applied unconditionally as Claude's
+  SDK test is.
+* **Interruption comes from the turn's verdict.** Qwen Code writes a `system`/`turn_result`
+  record after each turn, whose `stopReason` is `cancelled` when the person stopped it and
+  `end_turn` when it ran to completion, and `turn_interrupted` reads that -- all four cancelled
+  turns in this machine's logs carry it, and reading it caught 4/4 where a structural guess alone
+  caught none. Older logs (0.27.x write none) fall back to the turn's shape: ending on a tool
+  call with no answer, with a following turn to prove the session went on. That sign is weaker --
+  a session that simply stops mid-tool looks the same -- which is why the verdict wins when both
+  exist.
 * **Turn boundaries.** Only the `user` record the person typed carries a `promptId`; the
   `assistant` and `tool_result` records of its turn carry none, so a turn is cut at the prompt
   record itself, as the other readers cut it.
@@ -199,11 +207,12 @@ tracks it and `QwenCode.keeps_history` is off, so nothing folds it.
 - **No catalog probe.** Qwen Code has no `--tools` or features-list command, so tool pruning
   can only propose a tool that has been called and then abandoned; it never proposes a tool
   that was loaded but never touched. The saving is therefore conservative.
-- **History import reads a log that names no front end and no interruption.** See
-  [The sessions you already ran](#the-sessions-you-already-ran): a one-shot `qwen "..."` run is
-  imported like an interactive session, and a turn the person broke off can enter the envelope.
-  Both are gaps in what Qwen Code 0.28.0 writes, not in the reader -- there is no `entrypoint`
-  field and no interruption marker to read.
+- **History import reads a log that names no front end.** See
+  [The sessions you already ran](#the-sessions-you-already-ran): with no `entrypoint` field, a
+  one-shot `qwen "..."` run is known only by its single prompt record, which the
+  `history_import_skip_one_shot` toggle decides whether to drop. An interruption is read from the
+  turn's own `turn_result` verdict (`stopReason: cancelled`), which the newest Qwen Code writes;
+  an older log carries no verdict and falls back to a weaker structural sign.
 - **Pricing is a snapshot, and one ratio differs from every other vendor's.** 14 Qwen models
   are priced in `tokeneconomizer/pricing.py` from the provider's `/v1/pricing`, cross-checked
   against the `ratePerMillion` that `/v1/generations` actually bills. A billed id missing from

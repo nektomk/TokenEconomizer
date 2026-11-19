@@ -889,9 +889,11 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
     `usageMetadata`, whose `promptTokenCount` counts the cached reads, and there is no
     cache-write figure. The history import reads that directory, so a repository's sessions from
     before the plugin are folded once and their ended-green turns seed the envelope. Its records
-    name no front end (there is no `entrypoint`) and no interruption, so a one-shot run is
-    imported like an interactive one and a turn the person broke off can enter the envelope;
-    only the `user` record carries a `promptId`, so a turn is cut at the prompt itself. Qwen
+    name no front end (there is no `entrypoint`), so a one-shot run is known only by its single
+    prompt record and dropped under `history_import_skip_one_shot`; an interruption is read from
+    the turn's own `turn_result` verdict (`stopReason: cancelled`), with a structural fallback for
+    older logs that write none. Only the `user` record carries a `promptId`, so a turn is cut at
+    the prompt itself. Qwen
     Code does not fire a `SessionEnd` hook, so a session is folded only when the next start
     finds it stale (600 s of silence) or by `te fold` manually. See `docs/QWEN.md`.
   * **The side call.** `qwen --safe-mode --max-tool-calls 0 --output-format json` with a neutral
