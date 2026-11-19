@@ -137,11 +137,16 @@ Three things this host's logs cannot tell the import, each checked against 0.28.
 * **Turn boundaries.** Only the `user` record the person typed carries a `promptId`; the
   `assistant` and `tool_result` records of its turn carry none, so a turn is cut at the prompt
   record itself, as the other readers cut it.
+* **No SessionEnd event.** Qwen Code does not fire a `SessionEnd` hook (verified 2026-11-19 on
+  a one-turn interactive session: the chat log ends on `system/ui_telemetry`, no session-end
+  record, and the plugin's `events.jsonl` has only a `turn`). A session is therefore folded
+  only when the next session start picks it up as stale (600 s of silence in its transcript,
+  `fold.STALE_S`) or by `te --host qwen fold` manually.
 
-A session is folded when it ends. A one-shot run (`qwen "..."`) does not fire `SessionEnd`,
-so its fold waits for the next session start in that repository, which picks up any session
-whose transcript has been quiet for 600 s (`fold.STALE_S`); `te --host qwen fold` folds it
-now instead, and `te --host qwen fold --session <id>` names one.
+A session is folded when it ends. Qwen Code does not fire a `SessionEnd` event, so its fold
+does not happen at the end of the run. Instead the next session start in that repository picks
+up any session whose transcript has been quiet for 600 s (`fold.STALE_S`); `te --host qwen
+fold` folds it now instead, and `te --host qwen fold --session <id>` names one.
 
 ## Settings
 

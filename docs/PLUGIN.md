@@ -891,8 +891,9 @@ open-vocabulary. On a repository you do not trust, leave micro-skills off (the d
     before the plugin are folded once and their ended-green turns seed the envelope. Its records
     name no front end (there is no `entrypoint`) and no interruption, so a one-shot run is
     imported like an interactive one and a turn the person broke off can enter the envelope;
-    only the `user` record carries a `promptId`, so a turn is cut at the prompt itself. See
-    `docs/QWEN.md`.
+    only the `user` record carries a `promptId`, so a turn is cut at the prompt itself. Qwen
+    Code does not fire a `SessionEnd` hook, so a session is folded only when the next start
+    finds it stale (600 s of silence) or by `te fold` manually. See `docs/QWEN.md`.
   * **The side call.** `qwen --safe-mode --max-tool-calls 0 --output-format json` with a neutral
     `--system-prompt`, every bundled tool named in `--exclude-tools`, and the prompt as a
     positional before that array — in a throwaway directory, on the person's default model
