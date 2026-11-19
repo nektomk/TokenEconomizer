@@ -71,6 +71,14 @@ def _write(root, sid, records):
     return str(path)
 
 
+def _turn_result(sid, prompt_id, stop_reason="end_turn"):
+    """The verdict Qwen Code writes after a turn: `state` finished/cancelled and a `stopReason`,
+    which is where an interruption actually shows up in a real log."""
+    return {"type": "system", "subtype": "turn_result", "sessionId": sid,
+            "systemPayload": {"state": "cancelled" if stop_reason == "cancelled" else "finished",
+                              "promptId": prompt_id, "stopReason": stop_reason}}
+
+
 def _session(tmp_path, sid="s1"):
     """A session: one prompt, two calls (one failed), usage on both assistant entries."""
     recs = [
@@ -840,10 +848,9 @@ def test_the_import_line_names_qwen_and_not_claude():
 
 # ---- the interrupted-turn sign and the one-shot skip -----------------------------------------
 def test_a_turn_left_on_an_unanswered_call_is_read_as_interrupted(tmp_path):
-    """Qwen Code writes no `[Request interrupted by user` marker, so the inherited
-    `claude_turn_interrupted` always answers False here and an interrupted turn would seed the
-    envelope as if it stopped normally. The structural sign catches it: the turn's last assistant
-    entry made a call, gave no text answer, and no tool_result came back after it."""
+    """A log with no `turn_result` verdict (older Qwen Code) falls back to the structure: a turn
+    whose last assistant entry called a tool and gave no answer, with a following turn to prove
+    the session went on, is the shape an interrupt leaves."""
     sid = "s1"
     path = _write(tmp_path, sid, [
         _user(sid, "do the thing", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
@@ -857,6 +864,59 @@ def test_a_turn_left_on_an_unanswered_call_is_read_as_interrupted(tmp_path):
     assert len(turns) == 2
     assert trace.qwen_turn_interrupted(turns[0]) is True     # the cut-short first turn
     assert trace.qwen_turn_interrupted(turns[1]) is False    # the answered second turn
+
+
+def test_a_cancelled_turn_result_is_read_as_interrupted(tmp_path):
+    """The exact sign a real log carries: Qwen Code writes a `system`/`turn_result` record after
+    the answer, and `stopReason: cancelled` means the person stopped the turn. Checked on this
+    machine's logs, where all four cancelled turns carry it."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "do the thing", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3-x", text="working on it", cwd="/w/repo"),
+        _turn_result(sid, f"{sid}########0", "cancelled"),
+        _user(sid, "next", "u2", cwd="/w/repo", prompt_id=f"{sid}########1"),
+        _assistant(sid, "a2", "qwen/qwen3-x", text="done", cwd="/w/repo"),
+        _turn_result(sid, f"{sid}########1", "end_turn"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert len(turns) == 2
+    assert trace.qwen_turn_interrupted(turns[0]) is True
+    assert trace.qwen_turn_interrupted(turns[1]) is False
+
+
+def test_an_end_turn_result_wins_over_an_unanswered_call(tmp_path):
+    """The verdict beats the structural guess: a turn that stopped after a call but whose marker
+    says `end_turn` completed, so it must not be read as an interrupt. This is the false positive
+    the structural sign alone produced on real logs."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "go", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3-x", cwd="/w/repo",
+                   calls=[("c1", "run_shell_command", {"command": "ls"})]),
+        _turn_result(sid, f"{sid}########0", "end_turn"),
+        _user(sid, "more", "u2", cwd="/w/repo", prompt_id=f"{sid}########1"),
+        _assistant(sid, "a2", "qwen/qwen3-x", text="ok", cwd="/w/repo"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert trace.qwen_turn_interrupted(turns[0]) is False
+
+
+def test_without_a_verdict_an_unanswered_call_needs_a_following_turn(tmp_path):
+    """Older logs carry no `turn_result`. The structural fallback then needs a following turn to
+    prove the session went on -- on real logs both fallback hits were a log's last turn, a session
+    that simply stopped, and flagging those seeded the envelope wrongly."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "first", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3-x", cwd="/w/repo",
+                   calls=[("c1", "run_shell_command", {"command": "ls"})]),
+        _user(sid, "actually stop", "u2", cwd="/w/repo", prompt_id=f"{sid}########1"),
+        _assistant(sid, "a2", "qwen/qwen3-x", text="stopped", cwd="/w/repo"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert trace.qwen_turn_interrupted(turns[0], has_next=True) is True
+    assert trace.qwen_turn_interrupted(turns[0], has_next=False) is False
 
 
 def test_a_turn_ending_on_a_completed_call_is_not_interrupted(tmp_path):
@@ -887,22 +947,23 @@ def test_a_turn_with_no_assistant_entry_is_not_interrupted(tmp_path):
     assert trace.qwen_turn_interrupted(turns[0]) is False
 
 
-def test_the_host_infers_an_interrupt_structurally(tmp_path):
-    """The adapter routes `turn_interrupted` to the qwen sign, not the Claude marker lookup:
+def test_the_host_infers_an_interrupt_from_the_turn_verdict(tmp_path):
+    """The adapter routes `turn_interrupted` to the qwen verdict, not the Claude marker lookup:
     `[CC]`'s marker line never appears in a Qwen Code log, so the inherited check would always
     answer False."""
     host = hosts.QwenCode()
     cut = _write(tmp_path, "cut", [
         _user("cut", "go", "u1", cwd="/w", prompt_id="cut########0"),
-        _assistant("cut", "a1", "m", cwd="/w",
-                   calls=[("c1", "run_shell_command", {"command": "ls"})]),
+        _assistant("cut", "a1", "m", text="on it", cwd="/w"),
+        _turn_result("cut", "cut########0", "cancelled"),
     ])
-    answered = _write(tmp_path, "ok", [
+    ok = _write(tmp_path, "ok", [
         _user("ok", "go", "u1", cwd="/w", prompt_id="ok########0"),
         _assistant("ok", "a1", "m", text="ok", cwd="/w"),
+        _turn_result("ok", "ok########0", "end_turn"),
     ])
     assert host.turn_interrupted(list(host.prompt_turns(cut))[0]) is True
-    assert host.turn_interrupted(list(host.prompt_turns(answered))[0]) is False
+    assert host.turn_interrupted(list(host.prompt_turns(ok))[0]) is False
 
 
 def test_one_shot_is_a_single_prompt_session(tmp_path):

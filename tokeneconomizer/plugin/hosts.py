@@ -243,7 +243,7 @@ class Host:
     def turn_calls(self, turn_lines):
         return trace.claude_calls(turn_lines)
 
-    def turn_interrupted(self, turn_lines):
+    def turn_interrupted(self, turn_lines, has_next=True):
         return trace.claude_turn_interrupted(turn_lines)
 
     def turn_answered(self, turn_lines):
@@ -1467,13 +1467,13 @@ class QwenCode(Host):
         return folder in {trace.qwen_project_folder(root),
                           trace.qwen_project_folder(os.path.realpath(root))}
 
-    def turn_interrupted(self, turn_lines):
+    def turn_interrupted(self, turn_lines, has_next=True):
         # Qwen Code writes no `[Request interrupted by user` marker, so the inherited
-        # `claude_turn_interrupted` always answers False here and an interrupted turn would seed
-        # the envelope as if it stopped normally. The structural sign replaces it: a turn the log
-        # ends on mid-flight, its last assistant entry having called a tool with no answer and no
-        # result coming back.
-        return trace.qwen_turn_interrupted(turn_lines)
+        # `claude_turn_interrupted` always answers False here. The turn's own verdict replaces it:
+        # a `turn_result` record with `stopReason: cancelled`, which the newest Qwen Code writes
+        # after the answer. Older logs carry no verdict, so `qwen_turn_interrupted` falls back to
+        # the structural sign, which needs a following turn to prove the session went on.
+        return trace.qwen_turn_interrupted(turn_lines, has_next=has_next)
 
     def is_one_shot(self, path, head, prompts, cfg):
         # Qwen Code stamps no `entrypoint`, so the inherited SDK-run test never fires and a

@@ -257,7 +257,7 @@ def replay_envelope(ctx, transcript_path):
                 code = int(m.group(1)) if m else None
             guard.fold(name, args if isinstance(args, dict) else {}, result, code,
                        envelope=None, thr=thr, judge=None)
-        normal = not ctx.host.turn_interrupted(turn) and (
+        normal = not ctx.host.turn_interrupted(turn, has_next=following is not None) and (
             following is not None or ctx.host.turn_answered(turn))
         if guard.cum_turns and normal:
             loopguard.record_turn(ctx.store, guard, level=level, overrides=overrides)

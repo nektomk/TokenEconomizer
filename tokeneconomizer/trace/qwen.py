@@ -322,6 +322,15 @@ def _qwen_claude_line(ev):
         return json.dumps(record)
 
     kind = ev.get("type")
+    if kind == "system" and ev.get("subtype") == "turn_result":
+        # The turn's own verdict, which Qwen Code writes after the answer: `state` is finished or
+        # cancelled, and a cancelled one is a turn the person stopped. Kept as a marker line
+        # (rather than dropped like the other bookkeeping) because it is the only explicit
+        # interruption sign the log carries; `claude_turn_interrupted` reads the same idea from
+        # [CC]'s own marker text.
+        payload = ev.get("systemPayload") or {}
+        return out({"type": "turn_result", "state": payload.get("state"),
+                    "stop_reason": payload.get("stopReason")})
     if kind == "user":
         if not _is_prompt(ev):
             return None
@@ -387,20 +396,29 @@ def qwen_is_one_shot(path):
     return user_count == 1
 
 
-def qwen_turn_interrupted(turn_lines):
-    """True when a turn's structure suggests it was cut off mid-flight: it ends on an assistant
-    record that called a tool and gave no answer, with no tool_result coming back after it. This
-    is a heuristic -- qwen's log carries no explicit `[Request interrupted by user` marker, which
-    is what `claude_turn_interrupted` keys on.
+def qwen_turn_interrupted(turn_lines, has_next=True):
+    """True when the person interrupted this turn.
 
-    The turn is a list of Claude-shaped log lines (from `qwen_prompt_turns`), so a turn that ran
-    to completion ends on an assistant record with text (or on a tool_result it then answered)."""
+    Read from the turn's own verdict: Qwen Code writes a `system`/`turn_result` record after the
+    answer carrying `stopReason: "cancelled"` when the turn was stopped, and `"end_turn"` when it
+    ran to completion. Checked against the real logs on this machine (2026-11-19): 4 cancelled
+    turns across the session files, all 4 carry the marker.
+
+    Only the newest Qwen Code writes that record, so older logs carry no verdict at all and this
+    falls back to the structural sign -- a turn ending on an assistant that called a tool and gave
+    no answer. That shape alone is not enough: a session whose log simply stops mid-tool ends the
+    same way, which the logs on this machine confirm (both fallback hits were a final turn). So
+    the sign needs a following turn to prove the person went on, and the caller supplies whether
+    one exists via `has_next`."""
     recs = [json.loads(ln) for ln in turn_lines]
-    if not recs:
+    for r in reversed(recs):
+        if r.get("type") == "turn_result":
+            return r.get("stop_reason") == "cancelled"
+    if not has_next or not recs:
         return False
     last = recs[-1]
     if last.get("type") != "assistant":
-        return False                      # ended on a result or a prompt: it did not stop dead
+        return False
     content = (last.get("message") or {}).get("content") or []
     calls = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_use"]
     answered = any(isinstance(p, dict) and p.get("type") == "text" and p.get("text")
