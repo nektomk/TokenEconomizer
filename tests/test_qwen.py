@@ -809,7 +809,10 @@ def test_history_import_folds_an_earlier_qwen_session(env, repo, tmp_path, monke
     ])
     quiet = time.time() - 3600          # over, but well inside `history_days`
     os.utime(path, (quiet, quiet))
-    for key, value in dict(env, QWEN_HOME=str(home)).items():
+    # This session carries one prompt record, so the one-shot heuristic would leave it out; the
+    # test is about the fold mechanics, not the skip, so the toggle is pinned off here. A pair of
+    # dedicated tests below covers the skip itself, both ways.
+    for key, value in dict(env, QWEN_HOME=str(home), TE_HISTORY_IMPORT_SKIP_ONE_SHOT="0").items():
         monkeypatch.setenv(key, value)
 
     assert cli.main(["--host", "qwen", "--cwd", repo, "history", "import"]) == 0
@@ -833,3 +836,161 @@ def test_the_import_line_names_qwen_and_not_claude():
     assert history.HOST_LABEL["qwen"] == "Qwen Code"
     assert history.describe({"state": "done", "imported": 1}, "qwen") == \
         "read 1 earlier session(s) from Qwen Code's history"
+
+
+# ---- the interrupted-turn sign and the one-shot skip -----------------------------------------
+def test_a_turn_left_on_an_unanswered_call_is_read_as_interrupted(tmp_path):
+    """Qwen Code writes no `[Request interrupted by user` marker, so the inherited
+    `claude_turn_interrupted` always answers False here and an interrupted turn would seed the
+    envelope as if it stopped normally. The structural sign catches it: the turn's last assistant
+    entry made a call, gave no text answer, and no tool_result came back after it."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "do the thing", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3-x", cwd="/w/repo",
+                   calls=[("c1", "run_shell_command", {"command": "pytest -q"})]),
+        # the run was cut here: no result for c1, no answer, and the log moves to the next prompt
+        _user(sid, "actually stop", "u2", cwd="/w/repo", prompt_id=f"{sid}########1"),
+        _assistant(sid, "a2", "qwen/qwen3-x", text="stopped", cwd="/w/repo"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert len(turns) == 2
+    assert trace.qwen_turn_interrupted(turns[0]) is True     # the cut-short first turn
+    assert trace.qwen_turn_interrupted(turns[1]) is False    # the answered second turn
+
+
+def test_a_turn_ending_on_a_completed_call_is_not_interrupted(tmp_path):
+    """The false-positive guard: a turn whose last entry called a tool but whose result came back
+    before the next prompt ran to completion, so it was not interrupted -- even though it ended on
+    a call rather than on prose."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "first", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3-x", cwd="/w/repo",
+                   calls=[("c1", "read_file", {"file_path": "/w/repo/a.py"})]),
+        _result(sid, "c1", "read_file", output="def f(): ..."),
+        _user(sid, "second", "u2", cwd="/w/repo", prompt_id=f"{sid}########1"),
+        _assistant(sid, "a2", "qwen/qwen3-x", text="done", cwd="/w/repo"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert trace.qwen_turn_interrupted(turns[0]) is False
+
+
+def test_a_turn_with_no_assistant_entry_is_not_interrupted(tmp_path):
+    """A prompt the model never reached (nothing after the user record) is not an interrupt."""
+    sid = "s1"
+    path = _write(tmp_path, sid, [
+        _user(sid, "hello", "u1", cwd="/w/repo", prompt_id=f"{sid}########0"),
+    ])
+    turns = list(trace.qwen_prompt_turns(path))
+    assert len(turns) == 1
+    assert trace.qwen_turn_interrupted(turns[0]) is False
+
+
+def test_the_host_infers_an_interrupt_structurally(tmp_path):
+    """The adapter routes `turn_interrupted` to the qwen sign, not the Claude marker lookup:
+    `[CC]`'s marker line never appears in a Qwen Code log, so the inherited check would always
+    answer False."""
+    host = hosts.QwenCode()
+    cut = _write(tmp_path, "cut", [
+        _user("cut", "go", "u1", cwd="/w", prompt_id="cut########0"),
+        _assistant("cut", "a1", "m", cwd="/w",
+                   calls=[("c1", "run_shell_command", {"command": "ls"})]),
+    ])
+    answered = _write(tmp_path, "ok", [
+        _user("ok", "go", "u1", cwd="/w", prompt_id="ok########0"),
+        _assistant("ok", "a1", "m", text="ok", cwd="/w"),
+    ])
+    assert host.turn_interrupted(list(host.prompt_turns(cut))[0]) is True
+    assert host.turn_interrupted(list(host.prompt_turns(answered))[0]) is False
+
+
+def test_one_shot_is_a_single_prompt_session(tmp_path):
+    """A one-shot `qwen "..."` run carries exactly one prompt record; an interactive session
+    accumulates two or more. Notifications are not prompts, so they do not lift the count."""
+    one = _write(tmp_path, "o", [
+        _user("o", "summarize", "u1", cwd="/w/repo", prompt_id="o########0"),
+        _assistant("o", "a1", "qwen/qwen3-x", text="sure", cwd="/w/repo"),
+    ])
+    inter = _write(tmp_path, "i", [
+        _user("i", "first", "u1", cwd="/w/repo", prompt_id="i########0"),
+        _assistant("i", "a1", "qwen/qwen3-x", text="x", cwd="/w/repo"),
+        _user("i", "second", "u2", cwd="/w/repo", prompt_id="i########1"),
+        _assistant("i", "a2", "qwen/qwen3-x", text="y", cwd="/w/repo"),
+    ])
+    notif_only = _write(tmp_path, "n", [
+        _user("n", "only", "u1", cwd="/w/repo", prompt_id="n########0"),
+        _assistant("n", "a1", "qwen/qwen3-x", text="z", cwd="/w/repo"),
+        _notify("n", "n1"),
+    ])
+    assert trace.qwen_is_one_shot(one) is True
+    assert trace.qwen_is_one_shot(inter) is False
+    assert trace.qwen_is_one_shot(notif_only) is True       # the notification is no prompt
+
+
+def test_the_host_gates_the_one_shot_skip_on_the_setting(tmp_path):
+    """Unlike Claude's unconditional SDK test, qwen's record-count heuristic is imperfect -- it
+    cannot tell a one-prompt interactive session from a one-shot run -- so the host honours
+    `history_import_skip_one_shot` rather than dropping such a session silently."""
+    from tokeneconomizer.plugin.config import LiveConfig
+    path = _write(tmp_path, "o", [
+        _user("o", "summarize", "u1", cwd="/w/repo", prompt_id="o########0"),
+        _assistant("o", "a1", "qwen/qwen3-x", text="sure", cwd="/w/repo"),
+    ])
+    host = hosts.QwenCode()
+    assert host.is_one_shot(path, {}, 1, LiveConfig(history_import_skip_one_shot=True)) is True
+    assert host.is_one_shot(path, {}, 1, LiveConfig(history_import_skip_one_shot=False)) is False
+    # `LiveConfig` alone, not just the host, must carry the toggle as a real field.
+    assert LiveConfig().history_import_skip_one_shot is True
+
+
+def test_history_import_skips_a_one_shot_qwen_session(env, repo, tmp_path, monkeypatch):
+    """With the toggle on (the default), a one-shot run -- one prompt record -- is left out of the
+    import as `headless`, so it neither folds nor seeds the envelope."""
+    from tokeneconomizer.plugin import cli
+    home = tmp_path / "qwenhome"
+    chats = home / "projects" / trace.qwen_project_folder(repo) / "chats"
+    chats.mkdir(parents=True)
+    sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    path = _write(chats, sid, [
+        _user(sid, "just summarize this", "u1", cwd=repo, prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3.8-max", cwd=repo, usage=USAGE, text="here it is"),
+    ])
+    quiet = time.time() - 3600
+    os.utime(path, (quiet, quiet))
+    for key, value in dict(env, QWEN_HOME=str(home), TE_HISTORY_IMPORT_SKIP_ONE_SHOT="1").items():
+        monkeypatch.setenv(key, value)
+
+    assert cli.main(["--host", "qwen", "--cwd", repo, "history", "import"]) == 0
+    store = _qwen_store(env, repo)
+    ledger = store.path("ledger.jsonl")
+    rows = ([json.loads(ln) for ln in open(ledger, encoding="utf-8") if ln.strip()]
+            if os.path.exists(ledger) else [])
+    assert rows == []                                        # nothing folded
+    assert (store.read("folded.json") or {}).get(sid) is None
+    assert store.read("envelope.json") is None               # no ended-green turn seeded
+
+
+def test_history_import_keeps_a_one_shot_when_the_toggle_is_off(env, repo, tmp_path, monkeypatch):
+    """The other side: turning the skip off restores the previous behaviour -- the one-shot run is
+    folded like any interactive session."""
+    from tokeneconomizer.plugin import cli
+    home = tmp_path / "qwenhome"
+    chats = home / "projects" / trace.qwen_project_folder(repo) / "chats"
+    chats.mkdir(parents=True)
+    sid = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee"
+    path = _write(chats, sid, [
+        _user(sid, "just summarize this", "u1", cwd=repo, prompt_id=f"{sid}########0"),
+        _assistant(sid, "a1", "qwen/qwen3.8-max", cwd=repo, usage=USAGE, text="here it is"),
+    ])
+    quiet = time.time() - 3600
+    os.utime(path, (quiet, quiet))
+    for key, value in dict(env, QWEN_HOME=str(home), TE_HISTORY_IMPORT_SKIP_ONE_SHOT="0").items():
+        monkeypatch.setenv(key, value)
+
+    assert cli.main(["--host", "qwen", "--cwd", repo, "history", "import"]) == 0
+    store = _qwen_store(env, repo)
+    rows = [json.loads(ln) for ln in open(store.path("ledger.jsonl"), encoding="utf-8")
+            if ln.strip()]
+    assert [r["session_id"] for r in rows] == [sid]
+    assert rows[0]["imported"] is True

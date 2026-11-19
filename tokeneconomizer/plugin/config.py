@@ -76,7 +76,12 @@ person can tune by hand:
   * history_max_sessions, history_days -- the newest sessions that import takes, and how far
                                    back it reads;
   * history_dirs                -- further Claude Code `projects` folders to read, beside
-                                   `$CLAUDE_CONFIG_DIR/projects` (else `~/.claude/projects`).
+                                   `$CLAUDE_CONFIG_DIR/projects` (else `~/.claude/projects`);
+  * history_import_skip_one_shot -- leave a scripted run out of an import rather than folding it
+                                   as an interactive session. On [CC] a reliable SDK marker makes
+                                   this unconditional; Qwen Code stamps no such marker, so there
+                                   it is a record-count guess (`qwen "..."` carries one prompt)
+                                   and this toggle decides whether to apply it.
 
 The names before the mechanisms were renamed are read too, so an existing config file keeps
 working: `inject` (microskills), `untool` (toolprune), `spiral` (loopguard), with their
@@ -221,6 +226,7 @@ class LiveConfig:
     history_max_sessions: int = 200
     history_days: int = 365
     history_dirs: list = field(default_factory=list)
+    history_import_skip_one_shot: bool = True
     shadow: bool = False
     vocabulary: str = "auto"
     warnings: list = field(default_factory=list)
@@ -364,7 +370,8 @@ _ENV = {"TE_MODE": "mode", "TE_SHADOW": "shadow",
         "TE_PI_EXTENSIONS": "pi_extensions", "TE_PI_CLI": "pi_cli",
         "TE_HERMES_CLI": "hermes_cli",
         "TE_HISTORY_IMPORT": "history_import", "TE_HISTORY_MAX_SESSIONS": "history_max_sessions",
-        "TE_HISTORY_DAYS": "history_days", "TE_HISTORY_DIRS": "history_dirs"}
+        "TE_HISTORY_DAYS": "history_days", "TE_HISTORY_DIRS": "history_dirs",
+        "TE_HISTORY_IMPORT_SKIP_ONE_SHOT": "history_import_skip_one_shot"}
 _ENV_THRESHOLDS = ("TE_SPIRAL_THRESHOLDS", "TE_LOOPGUARD_THRESHOLDS")
 
 

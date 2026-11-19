@@ -249,6 +249,15 @@ class Host:
     def turn_answered(self, turn_lines):
         return trace.claude_turn_answered(turn_lines)
 
+    def is_one_shot(self, path, head, prompts, cfg):
+        """Whether the import should leave this session out as a scripted run rather than a
+        person's interactive session. Default: a one-prompt SDK run (`claude -p`, or a script
+        through the SDK), whose restricted tools and long autonomous turns say little about the
+        person's own sessions. The SDK marker is reliable, so this is tested unconditionally; a
+        host whose log carries no front-end marker overrides it to read the log's own record
+        counts instead, gated behind `cfg.history_import_skip_one_shot`."""
+        return prompts <= 1 and str(head.get("entrypoint") or "").lower().startswith("sdk")
+
     def folder_matches(self, root, folder):
         """Does a log's folder name this repository's root, when the log's cwd is gone?"""
         return folder in {trace.claude_project_folder(root),
@@ -1457,6 +1466,22 @@ class QwenCode(Host):
         # a letter or a digit becomes `-`. Only asked when the recorded cwd is gone.
         return folder in {trace.qwen_project_folder(root),
                           trace.qwen_project_folder(os.path.realpath(root))}
+
+    def turn_interrupted(self, turn_lines):
+        # Qwen Code writes no `[Request interrupted by user` marker, so the inherited
+        # `claude_turn_interrupted` always answers False here and an interrupted turn would seed
+        # the envelope as if it stopped normally. The structural sign replaces it: a turn the log
+        # ends on mid-flight, its last assistant entry having called a tool with no answer and no
+        # result coming back.
+        return trace.qwen_turn_interrupted(turn_lines)
+
+    def is_one_shot(self, path, head, prompts, cfg):
+        # Qwen Code stamps no `entrypoint`, so the inherited SDK-run test never fires and a
+        # one-shot `qwen "..."` run would be imported like an interactive session. The log's own
+        # record count is the only evidence: a one-shot run carries exactly one prompt. The
+        # heuristic cannot tell a one-prompt interactive session apart, so it is gated behind
+        # `history_import_skip_one_shot` rather than applied unconditionally like Claude's.
+        return cfg.history_import_skip_one_shot and trace.qwen_is_one_shot(path)
 
 HOSTS = {"claude": ClaudeCode, "codex": Codex, "copilot": Copilot, "droid": Droid,
          "opencode": OpenCode, "pi": Pi, "cursor": Cursor, "hermes": Hermes, "grok": Grok,

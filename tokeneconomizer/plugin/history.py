@@ -164,12 +164,6 @@ def is_this_repository(ctx, folder, cwd, cache=None):
     return ctx.host.folder_matches(ctx.repo.root, folder)
 
 
-def _headless(head, prompts):
-    """A one-prompt SDK run: `claude -p`, or a script through the SDK. A person who talks to
-    Claude Code through an SDK front end gives it several prompts, and that session is kept."""
-    return prompts <= 1 and str(head.get("entrypoint") or "").lower().startswith("sdk")
-
-
 def plan(ctx, now=None):
     """What an import would fold here, and why the rest is left out; reads, never writes.
 
@@ -204,7 +198,7 @@ def plan(ctx, now=None):
             prompts = ctx.host.prompt_count(log["path"]) or 0
             if prompts <= 0:
                 skip("no_prompt")
-            elif _headless(head, prompts):
+            elif ctx.host.is_one_shot(log["path"], head, prompts, cfg):
                 skip("headless")
             else:
                 found.append({"id": sid, "path": log["path"],

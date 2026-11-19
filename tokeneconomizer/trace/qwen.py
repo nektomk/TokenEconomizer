@@ -374,3 +374,35 @@ def qwen_prompt_turns(path):
             current.append(line)
     if current is not None:
         yield current
+
+
+def qwen_is_one_shot(path):
+    """True when the session log holds exactly one prompt record -- a one-shot `qwen "..."` run,
+    not an interactive terminal session. Verified 2026-11-19 against 3 one-shot logs (all had one
+    prompt) and 1 interactive log (35). Counts through `_is_prompt`, like `qwen_prompt_count`, so
+    the notification records the log also writes are not mistaken for prompts. The import can use
+    this to skip one-shot sessions if configured to do so."""
+    user_count = sum(1 for ev in _records(path)
+                     if ev.get("type") == "user" and _is_prompt(ev))
+    return user_count == 1
+
+
+def qwen_turn_interrupted(turn_lines):
+    """True when a turn's structure suggests it was cut off mid-flight: it ends on an assistant
+    record that called a tool and gave no answer, with no tool_result coming back after it. This
+    is a heuristic -- qwen's log carries no explicit `[Request interrupted by user` marker, which
+    is what `claude_turn_interrupted` keys on.
+
+    The turn is a list of Claude-shaped log lines (from `qwen_prompt_turns`), so a turn that ran
+    to completion ends on an assistant record with text (or on a tool_result it then answered)."""
+    recs = [json.loads(ln) for ln in turn_lines]
+    if not recs:
+        return False
+    last = recs[-1]
+    if last.get("type") != "assistant":
+        return False                      # ended on a result or a prompt: it did not stop dead
+    content = (last.get("message") or {}).get("content") or []
+    calls = [p for p in content if isinstance(p, dict) and p.get("type") == "tool_use"]
+    answered = any(isinstance(p, dict) and p.get("type") == "text" and p.get("text")
+                   for p in content)
+    return bool(calls) and not answered
