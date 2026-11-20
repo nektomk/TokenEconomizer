@@ -6,6 +6,9 @@ if [ "${OS:-}" = Windows_NT ]; then
   case $self in *\\*) self=$(printf '%s' "$self" | tr '\\' '/') ;; esac
 fi
 dir=$(CDPATH= cd -- "${self%/*}" && pwd)
+# `--host qwen` names the destination the CLI reads its state from, so hook snippets and the Qwen
+# docs call it as `te --host qwen <sub>`. The CLI derives the host from that position, so the
+# argument is passed through untouched; this comment marks the spot to keep it that way.
 # Session logs are UTF-8; without this, Python on Windows reads them in the ANSI code page.
 export PYTHONUTF8=1
 outside_windowsapps() {

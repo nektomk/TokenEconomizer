@@ -838,8 +838,26 @@ def test_toolprune_note_after_refresh_catalog(tmp_path, monkeypatch, capsys):
 
 def test_codex_sees_no_claude_format_commands_folder():
     """Codex turns a plugin's `commands/` folder into skills of its own, which would list every
-    command twice beside `codex-skills/`; Claude Code and Copilot read `slash-commands/` instead."""
+    command twice beside `codex-skills/`; Claude Code and Copilot read `slash-commands/` instead.
+
+    The same rule covers `qwen-commands/`, the source of `/tokeneconomizer:te`: it is a folder in
+    `plugin/`, so every host's loader sees it, and only `build_qwen` copies it out under the
+    bundle's own name `commands`. Dropping it here would let Codex (and Droid, whose `commands/`
+    `build_droid` rewrites) pick up a Qwen-only command."""
     assert not os.path.exists(os.path.join(PLUGIN, "commands"))
+    # The Qwen-only command lives in `plugin/qwen-commands/`, which is a folder in `plugin/` and so
+    # visible to every host's loader; it must reach a bundle only as `commands`, under a manifest
+    # key no other agent reads. Assert both halves: the source exists, and no shared manifest
+    # claims it.
+    assert os.path.isfile(os.path.join(PLUGIN, "qwen-commands", "te.md"))
+    for manifest in (".claude-plugin/plugin.json", ".github/plugin/plugin.json",
+                     ".codex-plugin/plugin.json", ".cursor-plugin/plugin.json",
+                     ".factory-plugin/plugin.json", ".antigravity-plugin/plugin.json"):
+        path = os.path.join(PLUGIN, manifest)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            assert "qwen-commands" not in json.dumps(json.load(fh))
     for manifest in (".claude-plugin/plugin.json", ".github/plugin/plugin.json"):
         with open(os.path.join(PLUGIN, manifest), encoding="utf-8") as fh:
             assert json.load(fh)["commands"] == "./slash-commands/"

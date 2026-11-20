@@ -8,6 +8,7 @@
   },
   "repository": "https://github.com/nektomk/TokenEconomizer",
   "license": "Apache-2.0",
+  "commandsDir": "commands",
   "hooks": {
     "SessionStart": [
       {

@@ -657,11 +657,28 @@ def test_qwen_plugin_packaging(tmp_path):
     for foreign in (".claude-plugin", ".codex-plugin", ".cursor-plugin", ".github",
                     ".factory-plugin", ".antigravity-plugin", "hooks", "hooks.json",
                     "codex-skills", "hermes", "opencode", "pi", "slash-commands",
-                    "package.json"):
+                    "package.json", "qwen-commands"):
         assert not os.path.exists(os.path.join(plugin, foreign)), foreign
 
     # Qwen Code installs a local path, so no marketplace file is written around it.
     assert os.listdir(str(out)) == ["tokeneconomizer"]
+
+    # `/tokeneconomizer:te` is the one slash command Qwen Code gets, so it travels as `commands/`
+    # and the manifest points at it. It is Qwen-only: `slash-commands/` above is what the other
+    # hosts already ship, and their loaders read anything in `commands/` too.
+    manifest = json.load(open(os.path.join(plugin, "qwen-extension.json"), encoding="utf-8"))
+    assert manifest["commandsDir"] == "commands"
+    assert sorted(os.listdir(os.path.join(plugin, "commands"))) == ["te.md"]
+    text = open(os.path.join(plugin, "commands", "te.md"), encoding="utf-8").read()
+    assert text.startswith("---\ndescription: ")
+    assert "{{args}}" in text
+    # The cascade: a checkout runs its own bootstrap, an installed extension its scripts/te, and a
+    # plain install the launcher from TOKENECONOMIZER_HOME. Qwen Code substitutes neither
+    # ${CLAUDE_PLUGIN_ROOT} nor ${QWEN_PLUGIN_ROOT} in a command body, so the branch that needs it
+    # must not be the only one.
+    assert "tokeneconomizer/te_bootstrap.py" in text
+    assert "${CLAUDE_PLUGIN_ROOT}/scripts/te" in text
+    assert "${TOKENECONOMIZER_HOME:-$HOME/.tokeneconomizer}/bin/te" in text
 
     # The proof the bundle exists for: the launcher finds the core through its own lib/, with
     # nothing above it. Loaded from the bundle's path, so __file__ resolves inside the bundle.

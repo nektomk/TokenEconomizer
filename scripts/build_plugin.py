@@ -79,7 +79,7 @@ def build_droid(out):
                         ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".github",
                         ".antigravity-plugin", "hooks.json",
                         "codex-skills", "hermes", "opencode", "pi", "slash-commands",
-                        "package.json", "*.md.bak"))
+                        "package.json", "*.md.bak", "qwen-commands"))
     shutil.copytree(os.path.join(REPO, "tokeneconomizer"),
                     os.path.join(plugin_out, "lib", "tokeneconomizer"), ignore=IGNORE)
     # Droid's hook file: top-level events, `--host droid`, no PostToolUseFailure (Droid has no
@@ -141,8 +141,14 @@ def build_qwen(out):
     same directory as a Claude, Codex, Copilot, Cursor, Droid, Pi or Antigravity plugin --
     `.claude-plugin/plugin.json` and `hooks/hooks.json` are among the layouts Qwen Code converts
     on its own -- and Qwen Code's hooks are already declared inline in `qwen-extension.json`, so
-    `hooks/` would only risk registering them twice. Slash commands are not declared by the
-    manifest either, and are left out for the same reason."""
+    `hooks/` would only risk registering them twice. Slash commands are the same story: only the
+    Qwen-only `commands/` directory travels, through `commandsDir` in the manifest, and the
+    shared `slash-commands/` stays behind because the other agents already ship it.
+
+    The source lives in `plugin/qwen-commands/`, not `plugin/commands/`: every other host's loader
+    scans a plugin's `commands/` too (Codex turns it into skills of its own, duplicating
+    `codex-skills/`), so the folder is named for its one consumer here and copied under the
+    bundle's own name, `commands`, which is what `commandsDir` points at."""
     out = os.path.abspath(out)
     plugin_out = os.path.join(out, "tokeneconomizer")
     if os.path.exists(plugin_out):
@@ -153,9 +159,12 @@ def build_qwen(out):
                         ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".github",
                         ".factory-plugin", ".antigravity-plugin", "hooks.json", "hooks",
                         "codex-skills", "hermes", "opencode", "pi", "slash-commands",
-                        "package.json", "*.md.bak"))
+                        "package.json", "*.md.bak", "qwen-commands"))
     shutil.copytree(os.path.join(REPO, "tokeneconomizer"),
                     os.path.join(plugin_out, "lib", "tokeneconomizer"), ignore=IGNORE)
+    # The Qwen-only slash command, under the name the manifest declares.
+    shutil.copytree(os.path.join(REPO, "plugin", "qwen-commands"),
+                    os.path.join(plugin_out, "commands"), ignore=IGNORE)
     return plugin_out
 
 
